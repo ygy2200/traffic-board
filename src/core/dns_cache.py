@@ -59,11 +59,13 @@ class DnsCacheReader:
     # ---- internals ----
     def _run(self) -> None:
         try:
+            flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
             self._proc = subprocess.Popen(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
                  _PS_SCRIPT.replace("__MS__", str(self._interval_ms))],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 text=True, encoding="utf-8", errors="replace",
+                creationflags=flags,
             )
         except Exception:
             return
