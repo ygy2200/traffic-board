@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""软件排行列表 v2：大字号、高对比、透明背景（贴 Fluent 深色底）。"""
+"""软件排行列表 v3：QLabel 布局（杜绝文字重叠）+ 底部比例条。"""
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QLabel, QFrame, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtWidgets import (
+    QHBoxLayout, QLabel, QFrame, QScrollArea, QVBoxLayout, QWidget,
+)
 
 
 def _fmt_bytes(n: int) -> str:
@@ -20,62 +22,59 @@ def _fmt_bytes(n: int) -> str:
 class RankRow(QWidget):
     clicked_pid = Signal(int)
 
-    HEIGHT = 54
-
     def __init__(self, app, share: float, metric: str, selected: bool, parent=None) -> None:
         super().__init__(parent)
         self._app = app
         self._share = max(0.03, share)
-        self._metric = metric
         self._selected = selected
-        self.setFixedHeight(self.HEIGHT)
+        self.setFixedHeight(58)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(8)
+
+        left = QVBoxLayout()
+        left.setSpacing(1)
+        self.lbl_name = QLabel(app.display)
+        f = QFont(); f.setPointSizeF(11); f.setBold(True)
+        self.lbl_name.setFont(f)
+        self.lbl_metric = QLabel(metric)
+        f2 = QFont(); f2.setPointSizeF(8.5)
+        self.lbl_metric.setFont(f2)
+        self.lbl_metric.setStyleSheet("color: rgb(170,170,170);")
+        left.addWidget(self.lbl_name)
+        left.addWidget(self.lbl_metric)
+        layout.addLayout(left, 1)
+
+        a = app
+        val = (f"↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
+               if (a.download or a.upload) else f"{len(a.conns)} 条")
+        self.lbl_value = QLabel(val)
+        f3 = QFont(); f3.setPointSizeF(10); f3.setBold(True)
+        self.lbl_value.setFont(f3)
+        self.lbl_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.lbl_value)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self.clicked_pid.emit(self._app.pid)
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        """只画：选中底 + 底部比例条。文字全部交给 QLabel，不会重叠。"""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         w, h = self.width(), self.height()
-
-        # 选中底色
         if self._selected:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(255, 255, 255, 22))
             p.drawRoundedRect(QRectF(2, 2, w - 4, h - 4), 8, 8)
-
-        # 比例条：放在下半行作为"底衬"，不与主文字重叠
-        bar_y, bar_h = h - 14, 5
-        bar_w = (w - 16) * min(1.0, self._share)
+        bar_y, bar_h = h - 7, 4
+        bar_w = (w - 24) * min(1.0, self._share)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 18))
-        p.drawRoundedRect(QRectF(8, bar_y, w - 16, bar_h), 2.5, 2.5)
-        p.setBrush(QColor(33, 150, 243, 200))
-        p.drawRoundedRect(QRectF(8, bar_y, bar_w, bar_h), 2.5, 2.5)
-
-        # 主文字：软件名（大、白）
-        p.setPen(QColor(245, 245, 245))
-        f = QFont(self.font()); f.setPointSizeF(11.5); f.setBold(True)
-        p.setFont(f)
-        p.drawText(10, 26, self._app.display)
-
-        # 渠道文字（中灰但够亮）
-        p.setPen(QColor(178, 178, 178))
-        f2 = QFont(self.font()); f2.setPointSizeF(9)
-        p.setFont(f2)
-        p.drawText(10, h - 19, self._metric)
-
-        # 右侧流量数字（大号、亮）
-        p.setPen(QColor(255, 255, 255))
-        f3 = QFont(self.font()); f3.setPointSizeF(10.5); f3.setBold(True)
-        p.setFont(f3)
-        a = self._app
-        val = (f"↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
-               if (a.download or a.upload) else f"{len(a.conns)} 条")
-        p.drawText(QRectF(0, 2, w - 12, h - 8),
-                   Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, val)
+        p.setBrush(QColor(255, 255, 255, 20))
+        p.drawRoundedRect(QRectF(12, bar_y, w - 24, bar_h), 2, 2)
+        p.setBrush(QColor(33, 150, 243, 210))
+        p.drawRoundedRect(QRectF(12, bar_y, bar_w, bar_h), 2, 2)
 
 
 class RankList(QWidget):
@@ -88,7 +87,7 @@ class RankList(QWidget):
         self.container = QWidget()
         self.v = QVBoxLayout(self.container)
         self.v.setContentsMargins(0, 0, 8, 0)
-        self.v.setSpacing(2)
+        self.v.setSpacing(3)
         self.v.addStretch(1)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
