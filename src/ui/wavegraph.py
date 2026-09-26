@@ -30,12 +30,12 @@ class WaveGraph(QWidget):
     GREEN = QColor(76, 175, 80)
     BLUE = QColor(33, 150, 243)
 
-    def __init__(self, parent=None, points: int = 240) -> None:
+    def __init__(self, parent=None, points: int = 120) -> None:
         super().__init__(parent)
         # 不预填：配合动态点距，曲线从第一帧就全宽拉伸，随采样加密滚动
         self._down: deque[float] = deque(maxlen=points)
         self._up: deque[float] = deque(maxlen=points)
-        self._points = points          # 240 点 ≈ 60 秒 @4Hz
+        self._points = points          # 120 点 ≈ 30 秒 @4Hz（绘制量减半，平滑度足够）
         self._mode_label = "字节/秒"
         self._ema_down = 0.0
         self._ema_up = 0.0

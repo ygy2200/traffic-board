@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-"""软件排行列表 v3：QLabel 布局（杜绝文字重叠）+ 底部比例条。"""
+"""软件排行列表 v4：增量更新（消除每秒全量重建导致的滚动卡顿）。
+
+核心改动：行 widget 按 pid 键控复用，每秒只 setText 变化的字段；
+顺序未变时不做任何布局操作；差集行才创建/销毁。
+"""
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QFrame, QVBoxLayout, QWidget,
-)
-from qfluentwidgets import ScrollArea
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QFrame, QVBoxLayout, QWidget
+from qfluentwidgets import ScrollArea, isDarkTheme
 
 
 def _fmt_bytes(n: int) -> str:
@@ -28,6 +30,7 @@ class RankRow(QWidget):
         self._app = app
         self._share = max(0.03, share)
         self._selected = selected
+        self._dark = isDarkTheme()   # 构造时缓存，不再每帧查询
         self.setFixedHeight(58)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -59,16 +62,33 @@ class RankRow(QWidget):
         self.lbl_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.lbl_value)
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        self.clicked_pid.emit(self._app.pid)
+    def pid(self) -> int:
+        return self._app.pid
+
+    def update_data(self, app, share: float, metric: str, selected: bool) -> None:
+        """秒级增量更新：只改真正变化的字段。"""
+        self._app = app
+        if self._share != share:
+            self._share = share
+            self.update()
+        if self._selected != selected:
+            self._selected = selected
+            self.update()
+        if self.lbl_name.text() != app.display:
+            self.lbl_name.setText(app.display)
+        if self.lbl_metric.text() != metric:
+            self.lbl_metric.setText(metric)
+        a = app
+        val = (f"↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
+               if (a.download or a.upload) else f"{len(a.conns)} 条")
+        if self.lbl_value.text() != val:
+            self.lbl_value.setText(val)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        """画：深色行底 + 选中高亮 + 底部比例条。文字由 QLabel 负责。"""
-        from qfluentwidgets import isDarkTheme
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        row_bg = QColor(43, 43, 43) if isDarkTheme() else QColor(248, 248, 248)
+        row_bg = QColor(43, 43, 43) if self._dark else QColor(248, 248, 248)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(row_bg)
         p.drawRoundedRect(QRectF(2, 2, w - 4, h - 4), 8, 8)
@@ -79,7 +99,7 @@ class RankRow(QWidget):
         bar_y, bar_h = h - 8, 4
         bar_w = (w - 24) * min(1.0, self._share)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 26) if isDarkTheme() else QColor(0, 0, 0, 26))
+        p.setBrush(QColor(255, 255, 255, 26) if self._dark else QColor(0, 0, 0, 26))
         p.drawRoundedRect(QRectF(12, bar_y, w - 24, bar_h), 2, 2)
         p.setBrush(QColor(33, 150, 243, 210))
         p.drawRoundedRect(QRectF(12, bar_y, bar_w, bar_h), 2, 2)
@@ -103,7 +123,8 @@ class RankList(QWidget):
         self.scroll.enableTransparentBackground()
         self.scroll.setWidget(self.container)
         v.addWidget(self.scroll)
-        self._rows = []
+        self._rows_by_pid: dict[int, RankRow] = {}
+        self._hint: QLabel | None = None
 
     def render(self, apps, metric_mode: str, selected_pid, keyword: str) -> None:
         kw = keyword.strip().lower()
@@ -116,22 +137,53 @@ class RankList(QWidget):
             apps = sorted(apps, key=lambda a: -len(a.conns))
             shares = self._shares(apps, key=lambda a: len(a.conns))
 
-        for row in self._rows:
+        # ---- 差集：删除消失的行 ----
+        keep = {a.pid for a in apps}
+        for pid in [p for p in self._rows_by_pid if p not in keep]:
+            row = self._rows_by_pid.pop(pid)
             self.v.removeWidget(row)
             row.deleteLater()
-        self._rows = []
+        self._set_hint(None)
+
+        # ---- 复用/创建 + 增量更新 ----
+        target_widgets = []
         for a in apps:
             metric = f"代理 {a.proxy_count} · 直连 {a.direct_count}" if a.proxy_count \
                 else f"连接 {len(a.conns)}"
-            row = RankRow(a, shares.get(a.pid, 0.03), metric, selected=(selected_pid == a.pid))
-            row.clicked_pid.connect(self.row_clicked.emit)
-            self.v.insertWidget(self.v.count() - 1, row)
-            self._rows.append(row)
+            row = self._rows_by_pid.get(a.pid)
+            if row is None:
+                row = RankRow(a, shares.get(a.pid, 0.03), metric, selected=(selected_pid == a.pid))
+                row.clicked_pid.connect(self.row_clicked.emit)
+                self._rows_by_pid[a.pid] = row
+            else:
+                row.update_data(a, shares.get(a.pid, 0.03), metric, selected=(selected_pid == a.pid))
+            target_widgets.append(row)
+
+        # ---- 顺序：仅在目标顺序与当前不同时重排（避免每秒布局抖动）----
+        current = [self.v.itemAt(i).widget() for i in range(self.v.count())
+                   if self.v.itemAt(i).widget() is not None]
+        if current != target_widgets:
+            for w in target_widgets:
+                self.v.removeWidget(w)
+            for i, w in enumerate(target_widgets):
+                self.v.insertWidget(i, w)
+
         if not apps:
-            hint = QLabel("没有匹配的软件")
-            hint.setStyleSheet("color: gray; padding: 12px;")
-            self.v.insertWidget(0, hint)
-            self._rows.append(hint)
+            self._set_hint("没有匹配的软件")
+
+    def _set_hint(self, text: str | None) -> None:
+        if self._hint is not None:
+            if text is None:
+                self.v.removeWidget(self._hint)
+                self._hint.deleteLater()
+                self._hint = None
+            else:
+                self._hint.setText(text)
+            return
+        if text is not None:
+            self._hint = QLabel(text)
+            self._hint.setStyleSheet("color: gray; padding: 12px; background: transparent;")
+            self.v.insertWidget(0, self._hint)
 
     @staticmethod
     def _shares(apps, key) -> dict:

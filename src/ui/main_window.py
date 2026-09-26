@@ -103,6 +103,9 @@ class MainWindow(FluentWindow):
         self._selected_pid = None
         self._last_bytes = None
         self._metric_mode = "bytes"
+        self._detail_key = None
+        self._detail_vals = []
+        self._detail_title_text = ""
 
         page = QWidget()
         page.setObjectName("dashPage")
@@ -209,23 +212,40 @@ class MainWindow(FluentWindow):
     def _render(self) -> None:
         b = self._board
         self.rank.render(b.apps, self._metric_mode, self._selected_pid, self.search.text())
+        self._render_detail()
 
+    def _render_detail(self) -> None:
+        """明细表增量更新：结构不变时只改文本（不再每秒新建 item）。"""
+        b = self._board
         app = next((a for a in b.apps if a.pid == self._selected_pid), None)
         kw = self.search.text().strip().lower()
         if app is None:
-            self.detail_title.setText("连接明细")
-            self.table.setRowCount(1)
-            self.table.setItem(0, 0, QTableWidgetItem("点击左侧任一软件，查看它的连接明细"))
-            for j in range(1, 4):
-                self.table.setItem(0, j, QTableWidgetItem(""))
+            if self._detail_key != ("none", ""):
+                self._detail_key = ("none", "")
+                self.detail_title.setText("连接明细")
+                self.table.setRowCount(1)
+                self.table.setItem(0, 0, QTableWidgetItem("点击左侧任一软件，查看它的连接明细"))
+                for j in range(1, 4):
+                    self.table.setItem(0, j, QTableWidgetItem(""))
             return
 
-        self.detail_title.setText(f"{app.display} 的连接（{len(app.conns)} 条）")
         rows = [cv for cv in app.conns if not kw or kw in cv.target.lower()]
-        self.table.setRowCount(len(rows))
+        title = f"{app.display} 的连接（{len(app.conns)} 条）"
+        key = (app.pid, tuple((cv.target, cv.channel) for cv in rows))
+        struct_changed = key != self._detail_key
+        if self._detail_title_text != title:
+            self.detail_title.setText(title)
+            self._detail_title_text = title
+        if len(rows) != self.table.rowCount():
+            self.table.setRowCount(len(rows))
+            struct_changed = True
+
         for i, cv in enumerate(rows):
             vals = [annotate(cv.target), _channel(cv), _fmt_bytes(cv.download), _fmt_bytes(cv.upload)]
+            old_vals = self._detail_vals[i] if struct_changed is False and i < len(self._detail_vals) else None
             for j, val in enumerate(vals):
+                if old_vals is not None and old_vals[j] == val:
+                    continue  # 文本未变，跳过
                 item = QTableWidgetItem(str(val))
                 if j == 1:
                     if cv.channel == "proxy":
@@ -235,6 +255,12 @@ class MainWindow(FluentWindow):
                     else:
                         item.setForeground(QColor(140, 140, 140))
                 self.table.setItem(i, j, item)
+        self._detail_key = key
+        self._detail_vals = [list(_detail_row_vals(cv)) for cv in rows]
+
+
+def _detail_row_vals(cv):
+    return [annotate(cv.target), _channel(cv), _fmt_bytes(cv.download), _fmt_bytes(cv.upload)]
 
     def closeEvent(self, event) -> None:  # noqa: N802
         try:
