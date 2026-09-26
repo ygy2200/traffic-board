@@ -1,0 +1,66 @@
+# -*- coding: utf-8 -*-
+"""常见进程名 -> 中文软件名映射。映射不到时显示原名。"""
+
+_APP_NAMES = {
+    "chrome.exe": "Chrome 浏览器",
+    "msedge.exe": "Edge 浏览器",
+    "firefox.exe": "Firefox 浏览器",
+    "brave.exe": "Brave 浏览器",
+    "opera.exe": "Opera 浏览器",
+    "steam.exe": "Steam",
+    "steamwebhelper.exe": "Steam 网页组件",
+    "steamservice.exe": "Steam 服务",
+    "cs2.exe": "CS2",
+    "flclash.exe": "FlClash",
+    "flclashcore.exe": "FlClash 内核",
+    "clash-verge.exe": "Clash Verge",
+    "clash-verge-service.exe": "Clash Verge 服务",
+    "verge-mihomo.exe": "mihomo 内核",
+    "v2rayn.exe": "v2rayN",
+    "dmm.exe": "DMM",
+    "wechat.exe": "微信",
+    "weixin.exe": "微信",
+    "wechatappex.exe": "微信小程序",
+    "qq.exe": "QQ",
+    "telegram.exe": "Telegram",
+    "discord.exe": "Discord",
+    "spotify.exe": "Spotify",
+    "pixpin.exe": "PixPin",
+    "code.exe": "VS Code",
+    "python.exe": "Python",
+    "pythonw.exe": "Python",
+    "explorer.exe": "资源管理器",
+    "svchost.exe": "Windows 系统服务",
+    "system": "Windows 系统",
+    "baidunetdisk.exe": "百度网盘",
+    "thunder.exe": "迅雷",
+    "wemeetapp.exe": "腾讯会议",
+    "dingtalk.exe": "钉钉",
+    "cloudmusic.exe": "网易云音乐",
+    "qqmusic.exe": "QQ音乐",
+    "mpc-be64.exe": "MPC 播放器",
+    "potplayermini64.exe": "PotPlayer",
+    "hermes.exe": "Hermes",
+    "zcode.exe": "ZCode",
+    "node.exe": "Node.js",
+    "git.exe": "Git",
+    "git-remote-https.exe": "Git",
+    "powershell.exe": "PowerShell",
+    "pwsh.exe": "PowerShell",
+    "cmd.exe": "命令行",
+    "curl.exe": "curl 工具",
+    "java.exe": "Java 程序",
+    "javaw.exe": "Java 程序",
+    "wireshark.exe": "Wireshark",
+    "launcher.exe": "启动器",
+    "renzheng.exe": "校园网认证",
+    "drmain.exe": "DrCOM 认证客户端",
+    "supplicant.exe": "认证客户端",
+}
+
+
+def display_name(proc_name: str) -> str:
+    """进程名 -> 中文显示名；未收录返回原名。"""
+    if not proc_name:
+        return "未知进程"
+    return _APP_NAMES.get(proc_name.lower(), proc_name)
