@@ -124,8 +124,8 @@ class MainWindow(FluentWindow):
 
         split.addWidget(left)
         split.addWidget(right)
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
         v.addWidget(split, 1)
 
         self.addSubInterface(page, FluentIcon.GLOBE, "流量")
