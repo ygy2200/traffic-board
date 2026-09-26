@@ -206,7 +206,8 @@ class MainWindow(FluentWindow):
         self._render()
 
     def _on_pick(self, pid: int) -> None:
-        self._selected_pid = None if self._selected_pid == pid else pid
+        # 点击即选中（不做 toggle：误触两次会显得"没反应"）
+        self._selected_pid = pid
         self._render()
 
     def _render(self) -> None:

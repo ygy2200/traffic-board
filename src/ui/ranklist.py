@@ -62,6 +62,10 @@ class RankRow(QWidget):
         self.lbl_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.lbl_value)
 
+        # 关键：所有子 QLabel 对鼠标透明，点击必然命中 RankRow 自身（修复"点了没反应"）
+        for lbl in (self.lbl_name, self.lbl_metric, self.lbl_value):
+            lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
     def pid(self) -> int:
         return self._app.pid
 
@@ -125,6 +129,21 @@ class RankList(QWidget):
         v.addWidget(self.scroll)
         self._rows_by_pid: dict[int, RankRow] = {}
         self._hint: QLabel | None = None
+        # 点击处理装在 viewport 的事件过滤器上：真机鼠标事件必经 viewport，
+        # 不依赖子类 mousePressEvent 的分发行为
+        self.scroll.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if obj is self.scroll.viewport() and event.type() == event.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                pos = self.container.mapFrom(self.scroll.viewport(), event.position().toPoint())
+                w = self.container.childAt(pos)
+                while w is not None and not isinstance(w, RankRow):
+                    w = w.parentWidget()
+                if isinstance(w, RankRow):
+                    self.row_clicked.emit(w.pid())
+                    return True
+        return super().eventFilter(obj, event)
 
     def render(self, apps, metric_mode: str, selected_pid, keyword: str) -> None:
         kw = keyword.strip().lower()
