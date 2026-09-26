@@ -6,11 +6,12 @@ import os
 import sys
 import time
 
+import psutil
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QTableWidgetItem, QVBoxLayout,
-    QWidget, QSplitter,
+    QWidget, QSplitter, QSizePolicy,
 )
 
 from qfluentwidgets import (
@@ -25,10 +26,9 @@ from ui.ranklist import RankList, _fmt_bytes
 
 
 class PollWorker(QThread):
-    """后台复合循环：250ms 轻量波形采样（Clash 总量差分），每 4 轮做一次重量级面板刷新。"""
+    """后台复合循环：250ms 双采样（全机网卡流量 + Clash 代理总量），每 4 轮一次面板刷新。"""
     board_ready = Signal(object)
-    wave_ready = Signal(float, float)   # down B/s, up B/s
-    offline_tick = Signal(int)          # 离线时发连接数
+    wave_ready = Signal(float, float, float, float, bool)  # 全机down/up B/s, 代理down/up B/s, clash在线
 
     def __init__(self, agg: Aggregator, wave_ms: int = 250, board_ticks: int = 4) -> None:
         super().__init__()
@@ -39,30 +39,41 @@ class PollWorker(QThread):
 
     def run(self) -> None:
         tick = 0
-        last = None
-        last_t = time.time()
+        last_nic = None
+        last_nic_t = 0.0
+        last_clash = None
         while self._running:
             loop_t0 = time.time()
             try:
-                clash = self._agg.clash.snapshot()
-                if clash.online:
-                    cur = (clash.upload_total, clash.download_total)
-                    if last is not None:
-                        dt = max(0.05, time.time() - last_t)
-                        self.wave_ready.emit((cur[1] - last[1]) / dt, (cur[0] - last[0]) / dt)
-                    last = cur
-                    last_t = time.time()
+                nics = psutil.net_io_counters(pernic=True)
+                dn = sum(v.bytes_recv for k, v in nics.items() if not k.lower().startswith("lo"))
+                up = sum(v.bytes_sent for k, v in nics.items() if not k.lower().startswith("lo"))
+                if last_nic is not None:
+                    dt = time.time() - last_nic_t
+                    if dt >= 0.1:
+                        down_bps = max(0.0, (dn - last_nic[0]) / dt)
+                        up_bps = max(0.0, (up - last_nic[1]) / dt)
+                        clash = self._agg.clash.snapshot()
+                        pd = pu = 0.0
+                        online = clash.online
+                        if online and last_clash is not None:
+                            pd = max(0.0, (clash.download_total - last_clash[1]) / dt)
+                            pu = max(0.0, (clash.upload_total - last_clash[0]) / dt)
+                        self.wave_ready.emit(down_bps, up_bps, pd, pu, online)
+                        last_nic_t = time.time()
+                    else:
+                        last_nic_t = t0
                 else:
-                    last = None
+                    last_nic_t = time.time()
+                last_nic = (dn, up)
+                if clash.online:
+                    last_clash = (clash.upload_total, clash.download_total)
             except Exception:
                 pass
             tick += 1
-            if tick % self._board_ticks == 0 or last is None:
+            if tick % self._board_ticks == 0:
                 try:
-                    board = self._agg.build()
-                    self.board_ready.emit(board)
-                    if last is None:
-                        self.offline_tick.emit(sum(len(a.conns) for a in board.apps))
+                    self.board_ready.emit(self._agg.build())
                 except Exception:
                     pass
             rest = self._wave_ms / 1000.0 - (time.time() - loop_t0)
@@ -115,21 +126,25 @@ class MainWindow(FluentWindow):
         top.addWidget(self.status)
         v.addLayout(top)
 
-        # ---- 波形区 ----
+        # ---- 波形区（强制全宽）----
         self.wave = WaveGraph(page)
+        self.wave.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.wave.setMinimumHeight(170)
         v.addWidget(self.wave)
         self.rate = CaptionLabel(page)
         v.addWidget(self.rate)
 
-        # ---- 左右分栏 ----
+        # ---- 左右分栏（显式宽度分配，防止塌缩）----
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
         lv.setSpacing(4)
-        lv.addWidget(SubtitleLabel("软件排行"))
+        self.rank_title = SubtitleLabel("软件排行（按连接数）")
+        lv.addWidget(self.rank_title)
         self.rank = RankList(left)
         lv.addWidget(self.rank, 1)
+        left.setMinimumWidth(300)
 
         right = QWidget()
         rv = QVBoxLayout(right)
@@ -154,6 +169,7 @@ class MainWindow(FluentWindow):
         split.addWidget(right)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 1)
+        split.setSizes([430, 530])
         v.addWidget(split, 1)
 
         self.addSubInterface(page, FluentIcon.GLOBE, "流量")
@@ -163,24 +179,16 @@ class MainWindow(FluentWindow):
         self.worker = PollWorker(agg)
         self.worker.board_ready.connect(self._on_board, Qt.ConnectionType.QueuedConnection)
         self.worker.wave_ready.connect(self._on_wave, Qt.ConnectionType.QueuedConnection)
-        self.worker.offline_tick.connect(self._on_offline, Qt.ConnectionType.QueuedConnection)
         self.worker.start()
 
-    def _on_wave(self, down_bps: float, up_bps: float) -> None:
-        self.wave.set_mode_label("字节/秒（Clash 数据 · 4Hz 采样）")
+    def _on_wave(self, down_bps: float, up_bps: float, pd: float, pu: float, online: bool) -> None:
+        """全机真实流量波形（直连+代理都含），代理量作数字标注。"""
+        self.wave.set_mode_label("全机真实流量 · 字节/秒（含直连与代理）")
         self.wave.push_sample(down_bps, up_bps)
-        self.rate.setText(f"当前速率：  ↓ {_fmt_bytes(down_bps)}/s    ↑ {_fmt_bytes(up_bps)}/s")
-        self._metric_mode = "bytes"
-        self.status.setText(f"● Clash 已连接 v{self.agg.clash.snapshot().version}")
-        self.status.setTextColor(QColor("#4caf50"), QColor("#4caf50"))
-
-    def _on_offline(self, conn_count: int) -> None:
-        self.wave.set_mode_label("连接数（Clash 离线，降级模式）")
-        self.wave.push_sample(conn_count, 0)
-        self.rate.setText(f"当前活动连接：{conn_count} 条（Clash 未连接，字节流量不可用）")
-        self._metric_mode = "count"
-        self.status.setText("● Clash 未连接")
-        self.status.setTextColor(QColor(150, 150, 150), QColor(120, 120, 120))
+        proxy_txt = f"    ·    经代理 ↓ {_fmt_bytes(pd)}/s  ↑ {_fmt_bytes(pu)}/s" if online else ""
+        self.rate.setText(f"全机  ↓ {_fmt_bytes(down_bps)}/s    ↑ {_fmt_bytes(up_bps)}/s{proxy_txt}")
+        self._metric_mode = "bytes" if online else "count"
+        self.rank_title.setText("软件排行（按代理流量）" if online else "软件排行（按连接数）")
 
     # ---- 数据流 ----
     def _on_board(self, board: Board) -> None:

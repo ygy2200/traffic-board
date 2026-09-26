@@ -32,6 +32,7 @@ class WaveGraph(QWidget):
 
     def __init__(self, parent=None, points: int = 240) -> None:
         super().__init__(parent)
+        # 不预填：配合动态点距，曲线从第一帧就全宽拉伸，随采样加密滚动
         self._down: deque[float] = deque(maxlen=points)
         self._up: deque[float] = deque(maxlen=points)
         self._points = points          # 240 点 ≈ 60 秒 @4Hz
@@ -85,8 +86,9 @@ class WaveGraph(QWidget):
         if len(data) < 2:
             return
         n = len(data)
-        step = w / (self._points - 1)
-        x0 = w - (n - 1) * step
+        # 关键：按当前实际点数铺满全宽（点少时拉伸显示，点满后自然滚动）
+        step = w / max(1, self._points - 1) if n >= self._points else w / max(1, n - 1)
+        x0 = w - (n - 1) * step if n < self._points else 0.0
         pts = [(x0 + i * step, h - (v / peak) * (h - 24) - 2) for i, v in enumerate(data)]
 
         path = QPainterPath()

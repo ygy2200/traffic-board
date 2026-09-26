@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QFrame, QScrollArea, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QFrame, QVBoxLayout, QWidget,
 )
+from qfluentwidgets import ScrollArea
 
 
 def _fmt_bytes(n: int) -> str:
@@ -39,10 +40,11 @@ class RankRow(QWidget):
         self.lbl_name = QLabel(app.display)
         f = QFont(); f.setPointSizeF(11); f.setBold(True)
         self.lbl_name.setFont(f)
+        self.lbl_name.setStyleSheet("color: rgb(245,245,245); background: transparent;")
         self.lbl_metric = QLabel(metric)
         f2 = QFont(); f2.setPointSizeF(8.5)
         self.lbl_metric.setFont(f2)
-        self.lbl_metric.setStyleSheet("color: rgb(170,170,170);")
+        self.lbl_metric.setStyleSheet("color: rgb(175,175,175); background: transparent;")
         left.addWidget(self.lbl_name)
         left.addWidget(self.lbl_metric)
         layout.addLayout(left, 1)
@@ -53,6 +55,7 @@ class RankRow(QWidget):
         self.lbl_value = QLabel(val)
         f3 = QFont(); f3.setPointSizeF(10); f3.setBold(True)
         self.lbl_value.setFont(f3)
+        self.lbl_value.setStyleSheet("color: rgb(255,255,255); background: transparent;")
         self.lbl_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self.lbl_value)
 
@@ -60,18 +63,23 @@ class RankRow(QWidget):
         self.clicked_pid.emit(self._app.pid)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        """只画：选中底 + 底部比例条。文字全部交给 QLabel，不会重叠。"""
+        """画：深色行底 + 选中高亮 + 底部比例条。文字由 QLabel 负责。"""
+        from qfluentwidgets import isDarkTheme
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
+        row_bg = QColor(43, 43, 43) if isDarkTheme() else QColor(248, 248, 248)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(row_bg)
+        p.drawRoundedRect(QRectF(2, 2, w - 4, h - 4), 8, 8)
         if self._selected:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, 22))
+            p.setPen(QPen(QColor(33, 150, 243, 200), 1.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(QRectF(2, 2, w - 4, h - 4), 8, 8)
-        bar_y, bar_h = h - 7, 4
+        bar_y, bar_h = h - 8, 4
         bar_w = (w - 24) * min(1.0, self._share)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 20))
+        p.setBrush(QColor(255, 255, 255, 26) if isDarkTheme() else QColor(0, 0, 0, 26))
         p.drawRoundedRect(QRectF(12, bar_y, w - 24, bar_h), 2, 2)
         p.setBrush(QColor(33, 150, 243, 210))
         p.drawRoundedRect(QRectF(12, bar_y, bar_w, bar_h), 2, 2)
@@ -89,9 +97,10 @@ class RankList(QWidget):
         self.v.setContentsMargins(0, 0, 8, 0)
         self.v.setSpacing(3)
         self.v.addStretch(1)
-        self.scroll = QScrollArea()
+        self.scroll = ScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.enableTransparentBackground()
         self.scroll.setWidget(self.container)
         v.addWidget(self.scroll)
         self._rows = []
