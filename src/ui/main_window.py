@@ -7,7 +7,7 @@ import sys
 import time
 
 import psutil
-from PySide6.QtCore import QThread, Qt, Signal, QTimer
+from PySide6.QtCore import QSettings, QThread, Qt, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QTableWidgetItem, QVBoxLayout,
@@ -234,6 +234,10 @@ class MainWindow(FluentWindow):
         self._current_detail_rows: list = []
         self._tray_exit = False
         self.alert_enabled = True
+        self._settings = QSettings("TrafficBoard", "TrafficBoard")
+        self.exit_on_close = self._settings.value("close/exit", "0") in ("1", "true", True)
+        self.badge_enabled = self._settings.value("badge/enabled", "1") in ("1", "true", True)
+        self.badge_topmost = self._settings.value("badge/topmost", "1") in ("1", "true", True)
         self.worker = PollWorker(agg)
         self.worker.board_ready.connect(self._on_board, Qt.ConnectionType.QueuedConnection)
         self.worker.wave_ready.connect(self._on_wave, Qt.ConnectionType.QueuedConnection)
@@ -270,7 +274,26 @@ class MainWindow(FluentWindow):
         self.badge.double_clicked.connect(self._show_main)
         self.badge.quit_requested.connect(self._quit_app)
         self.badge.move(100, 100)
-        self.badge.show()
+        self.badge.set_topmost(self.badge_topmost)
+        if not self.badge_enabled:
+            self.badge.hide()
+        else:
+            self.badge.show()
+
+    # ---- 设置联动（SettingsPage 经 window() 调用）----
+    def set_badge_visible(self, on: bool) -> None:
+        self.badge_enabled = on
+        if on:
+            self.badge.show()
+        else:
+            self.badge.hide()
+
+    def set_badge_topmost(self, on: bool) -> None:
+        self.badge_topmost = on
+        self.badge.set_topmost(on)
+
+    def set_exit_on_close(self, on: bool) -> None:
+        self.exit_on_close = on
 
     def _show_main(self) -> None:
         self.show()
@@ -282,8 +305,8 @@ class MainWindow(FluentWindow):
         self.close()
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        # 关窗默认最小化到托盘；只有托盘菜单"退出"才真正退出
-        if not self._tray_exit:
+        # 关窗行为由设置决定：默认最小化到托盘；开启"直接退出"或托盘菜单退出时真退
+        if not self._tray_exit and not self.exit_on_close:
             from PySide6.QtWidgets import QSystemTrayIcon
             event.ignore()
             self.hide()
@@ -373,7 +396,8 @@ class MainWindow(FluentWindow):
         down_avg, up_avg, pd_avg, pu_avg = vals
         proxy_txt = f"    ·    经代理 ↓ {_fmt_bytes(pd_avg)}/s  ↑ {_fmt_bytes(pu_avg)}/s" if online else ""
         self.rate.setText(f"全机  ↓ {_fmt_bytes(down_avg)}/s    ↑ {_fmt_bytes(up_avg)}/s{proxy_txt}")
-        self.badge.set_speed(_fmt_bytes(down_avg) + "/s", _fmt_bytes(up_avg) + "/s")
+        if self.badge_enabled:
+            self.badge.set_speed(_fmt_bytes(down_avg) + "/s", _fmt_bytes(up_avg) + "/s")
         self._metric_mode = "bytes" if online else "count"
         self.rank_title.setText("软件排行（按代理流量）" if online else "软件排行（按连接数）")
 

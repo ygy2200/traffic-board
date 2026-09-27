@@ -60,6 +60,11 @@ class SpeedBadge(QWidget):
         self._settings.setValue("badge/pos", self.pos())
 
     # ---- 交互 ----
+    def set_topmost(self, on: bool) -> None:
+        """切换置顶（固定图层）。需要重新 show 才能生效。"""
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, on)
+        self.show()
+
     def set_speed(self, down_txt: str, up_txt: str) -> None:
         if self._down != down_txt or self._up != up_txt:
             self._down = down_txt
