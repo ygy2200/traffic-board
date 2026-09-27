@@ -14,6 +14,20 @@ _WIRESHARK_CANDIDATES = [
 ]
 
 
+def app_icon_path() -> str:
+    """应用图标路径：打包后从 PyInstaller 解包目录找，开发态从源码 assets 找。"""
+    import sys
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        for cand in (os.path.join(base, "assets", "icon.ico"),
+                     os.path.join(os.path.dirname(sys.executable), "assets", "icon.ico")):
+            if os.path.isfile(cand):
+                return cand
+        return ""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "assets", "icon.ico")
+
+
 def find_wireshark() -> str:
     """定位 Wireshark.exe：注册表 → 常见路径。找不到返回空串。"""
     try:

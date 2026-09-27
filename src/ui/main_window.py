@@ -247,9 +247,9 @@ class MainWindow(FluentWindow):
     def _init_tray(self) -> None:
         from PySide6.QtWidgets import QSystemTrayIcon, QMenu
         from PySide6.QtGui import QIcon
-        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                 "assets", "icon.ico")
-        self.tray = QSystemTrayIcon(QIcon(icon_path) if os.path.isfile(icon_path) else self.windowIcon(), self)
+        from core.tools import app_icon_path
+        icon_path = app_icon_path()
+        self.tray = QSystemTrayIcon(QIcon(icon_path) if icon_path else self.windowIcon(), self)
         menu = QMenu()
         act_show = menu.addAction("显示主界面")
         act_help = menu.addAction("使用帮助")
@@ -294,6 +294,8 @@ class MainWindow(FluentWindow):
             self.tray.hide()
             self.badge.close()
             self.worker.stop()
+            if not self.worker.wait(5000):
+                print("[退出] 采样线程未在 5 秒内结束，强制退出", flush=True)
             self.agg.stop()
         finally:
             event.accept()
@@ -307,12 +309,27 @@ class MainWindow(FluentWindow):
 
         row = self.table.rowAt(int(pos.y()))
         cv = self._current_detail_rows[row] if 0 <= row < len(self._current_detail_rows) else None
+        # 抓包目标：优先 IP，无 IP（Clash 只有域名的连接）用域名过滤
+        ws_target = ""
+        ws_port = cv.raddr_port if cv else 0
+        if cv is not None:
+            if cv.raddr_ip:
+                ws_target = cv.raddr_ip
+            else:
+                host_part = cv.target.split(":")[0] if cv.target else ""
+                if host_part and "/" not in host_part and "（" not in host_part:
+                    ws_target = host_part
         menu = QMenu(self)
+        ws_path = find_wireshark()
         act_copy = menu.addAction("复制目标地址")
         act_copy.setEnabled(cv is not None)
+        # 抓包可用性：有目标且非本机回环（127.0.0.1:7890 代理入口行抓出来全是回环加密流，无意义）
+        is_loopback_entry = bool(ws_target) and (ws_target.startswith("127.0.0.1") or ws_target == "::1")
         act_ws = menu.addAction("用 Wireshark 抓这条连接")
-        ws_path = find_wireshark()
-        act_ws.setEnabled(cv is not None and bool(ws_path) and bool(cv.raddr_ip) and cv.channel != "local")
+        act_ws.setEnabled(cv is not None and bool(ws_path) and bool(ws_target) and not is_loopback_entry)
+        if cv is not None and is_loopback_entry:
+            hint = menu.addAction("（代理入口连接：抓它只会看到回环加密流）")
+            hint.setEnabled(False)
         act_kill = menu.addAction("断开此代理连接")
         act_kill.setEnabled(cv is not None and bool(cv.conn_id))
         menu.addSeparator()
@@ -323,7 +340,10 @@ class MainWindow(FluentWindow):
         if chosen is act_copy and cv is not None:
             QApplication.clipboard().setText(cv.target)
         elif chosen is act_ws and cv is not None:
-            filt = f"host {cv.raddr_ip} and port {cv.raddr_port}"
+            if cv.raddr_ip:
+                filt = f"host {ws_target} and port {ws_port}" if ws_port else f"host {ws_target}"
+            else:
+                filt = f"host {ws_target}"
             _sp.Popen([ws_path, "-f", filt])
         elif chosen is act_kill and cv is not None:
             self.agg.clash.close_connection(cv.conn_id)
