@@ -179,6 +179,13 @@ class MainWindow(FluentWindow):
 
         self.rank.row_clicked.connect(self._on_pick)
         self.search.textChanged.connect(self._render)
+
+        # ---- 帮助页 ----
+        from ui.help_page import HelpPage
+        self.page_help = HelpPage()
+        self.addSubInterface(self.page_help, FluentIcon.QUESTION, "帮助")
+
+        self._wave_buf: list = []
         self.worker = PollWorker(agg)
         self.worker.board_ready.connect(self._on_board, Qt.ConnectionType.QueuedConnection)
         self.worker.wave_ready.connect(self._on_wave, Qt.ConnectionType.QueuedConnection)
@@ -188,8 +195,15 @@ class MainWindow(FluentWindow):
         """全机真实流量波形（直连+代理都含），代理量作数字标注。"""
         self.wave.set_mode_label("全机真实流量 · 字节/秒（含直连与代理）")
         self.wave.push_sample(down_bps, up_bps)
-        proxy_txt = f"    ·    经代理 ↓ {_fmt_bytes(pd)}/s  ↑ {_fmt_bytes(pu)}/s" if online else ""
-        self.rate.setText(f"全机  ↓ {_fmt_bytes(down_bps)}/s    ↑ {_fmt_bytes(up_bps)}/s{proxy_txt}")
+        # 速率数字防跳：攒 4 个采样（1 秒）取均值后刷新一次显示
+        self._wave_buf.append((down_bps, up_bps, pd, pu))
+        if len(self._wave_buf) < 4:
+            return
+        vals = [sum(col) / len(self._wave_buf) for col in zip(*self._wave_buf)]
+        self._wave_buf = []
+        down_avg, up_avg, pd_avg, pu_avg = vals
+        proxy_txt = f"    ·    经代理 ↓ {_fmt_bytes(pd_avg)}/s  ↑ {_fmt_bytes(pu_avg)}/s" if online else ""
+        self.rate.setText(f"全机  ↓ {_fmt_bytes(down_avg)}/s    ↑ {_fmt_bytes(up_avg)}/s{proxy_txt}")
         self._metric_mode = "bytes" if online else "count"
         self.rank_title.setText("软件排行（按代理流量）" if online else "软件排行（按连接数）")
 
