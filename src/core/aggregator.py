@@ -31,6 +31,9 @@ class ConnView:
     upload: int = 0
     download: int = 0
     from_clash: bool = False
+    conn_id: str = ""      # Clash 连接 id（用于断开）
+    raddr_ip: str = ""     # 裸 IP（Wireshark 过滤用）
+    raddr_port: int = 0
 
 
 @dataclass
@@ -74,6 +77,10 @@ class Aggregator:
         self.poller = ConnectionPoller()
         self.dns = DnsCacheReader()
         self.clash = ClashApiPoller()
+        from .history import HistoryStore
+        self.history = HistoryStore()
+        from .known import KnownPeers
+        self.known = KnownPeers()
         self.proxy_ports = set(proxy_ports or [7890, 7897, 10809])
         self._started = False
 
@@ -87,6 +94,8 @@ class Aggregator:
         if self._started:
             self.dns.stop()
             self.clash.stop()
+            self.history.close()
+            self.known.close()
 
     def build(self) -> Board:
         self.start()
@@ -120,7 +129,8 @@ class Aggregator:
                 channel = _CHANNEL_PROXY if node else _CHANNEL_DIRECT
                 cv = ConnView(proto=cc.network, target=target, channel=channel,
                               node=node, upload=cc.upload, download=cc.download,
-                              from_clash=True)
+                              from_clash=True, conn_id=cc.conn_id,
+                              raddr_ip=cc.dest_ip, raddr_port=cc.dest_port)
                 app_of(pid, proc_name).conns.append(cv)
                 clash_used_targets.add((proc_name, target, cv.proto))
 
@@ -148,7 +158,8 @@ class Aggregator:
             if clash.online and channel == _CHANNEL_DIRECT and key in clash_used_targets:
                 continue  # Clash 已按域名展示同进程同目标，避免双份
             app_of(sc.pid, sc.proc_name).conns.append(
-                ConnView(proto=sc.proto, target=target, channel=channel, node=node))
+                ConnView(proto=sc.proto, target=target, channel=channel, node=node,
+                         raddr_ip=sc.raddr_ip, raddr_port=sc.raddr_port))
 
         board.apps = sorted(apps.values(), key=lambda a: (-len(a.conns), a.display.lower()))
         return board

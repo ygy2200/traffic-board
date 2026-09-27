@@ -7,7 +7,7 @@ import sys
 import time
 
 import psutil
-from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtCore import QThread, Qt, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QTableWidgetItem, QVBoxLayout,
@@ -19,7 +19,7 @@ from qfluentwidgets import (
     SubtitleLabel, TableWidget, Theme, setTheme,
 )
 
-from core.aggregator import Aggregator, Board
+from core.aggregator import Aggregator, Board, CHANNEL_LABEL
 from core.domains_cn import annotate
 from ui.wavegraph import WaveGraph
 from ui.ranklist import RankList, _fmt_bytes
@@ -36,9 +36,13 @@ class PollWorker(QThread):
         self._wave_ms = wave_ms
         self._board_ticks = board_ticks
         self._running = True
+        self._acc_down = 0.0     # 全机字节累计（60 秒落库）
+        self._acc_up = 0.0
+        self._acc_n = 0
+        self._last_app_total: dict = {}   # 软件代理字节累计快照（差分用）
+        self._tick = 0
 
     def run(self) -> None:
-        tick = 0
         last_nic = None
         last_nic_t = 0.0
         last_clash = None
@@ -53,6 +57,8 @@ class PollWorker(QThread):
                     if dt >= 0.1:
                         down_bps = max(0.0, (dn - last_nic[0]) / dt)
                         up_bps = max(0.0, (up - last_nic[1]) / dt)
+                        self._acc_down += down_bps * dt
+                        self._acc_up += up_bps * dt
                         clash = self._agg.clash.snapshot()
                         pd = pu = 0.0
                         online = clash.online
@@ -61,24 +67,47 @@ class PollWorker(QThread):
                             pu = max(0.0, (clash.upload_total - last_clash[0]) / dt)
                         self.wave_ready.emit(down_bps, up_bps, pd, pu, online)
                         last_nic_t = time.time()
-                    else:
-                        last_nic_t = t0
+                        if online:
+                            last_clash = (clash.upload_total, clash.download_total)
                 else:
                     last_nic_t = time.time()
                 last_nic = (dn, up)
-                if clash.online:
-                    last_clash = (clash.upload_total, clash.download_total)
             except Exception:
                 pass
-            tick += 1
-            if tick % self._board_ticks == 0:
+            self._tick += 1
+            if self._tick % self._board_ticks == 0:
                 try:
                     self.board_ready.emit(self._agg.build())
                 except Exception:
                     pass
+            # 每 60 秒历史落库
+            if self._tick % 240 == 0:
+                self._flush_history()
             rest = self._wave_ms / 1000.0 - (time.time() - loop_t0)
             if rest > 0:
                 time.sleep(rest)
+
+    def _flush_history(self) -> None:
+        try:
+            self._agg.known.flush()
+            clash = self._agg.clash.snapshot()
+            per_app: dict = {}
+            if clash.online:
+                cur: dict = {}
+                for c in clash.conns:
+                    proc = c.process or "未知进程"
+                    u, d = cur.get(proc, (0, 0))
+                    cur[proc] = (u + c.upload, d + c.download)
+                for proc, (u, d) in cur.items():
+                    lu, ld = self._last_app_total.get(proc, (0, 0))
+                    per_app[proc] = (max(0, u - lu), max(0, d - ld), 1)
+                self._last_app_total = cur
+            self._agg.history.write_tick(int(time.time()), per_app,
+                                         int(self._acc_up), int(self._acc_down))
+        except Exception:
+            pass
+        self._acc_down = 0.0
+        self._acc_up = 0.0
 
     def stop(self) -> None:
         self._running = False
@@ -106,6 +135,7 @@ class MainWindow(FluentWindow):
         self._detail_key = None
         self._detail_vals = []
         self._detail_title_text = ""
+        self._alert_ts: dict = {}   # 每进程上次提醒时间（陌生连接限流）
 
         page = QWidget()
         page.setObjectName("dashPage")
@@ -166,6 +196,8 @@ class MainWindow(FluentWindow):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._detail_menu)
         rv.addWidget(self.table, 1)
 
         split.addWidget(left)
@@ -185,11 +217,128 @@ class MainWindow(FluentWindow):
         self.page_help = HelpPage()
         self.addSubInterface(self.page_help, FluentIcon.QUESTION, "帮助")
 
+        # ---- 设置页 ----
+        from ui.settings_page import SettingsPage
+        self.page_settings = SettingsPage()
+        self.addSubInterface(self.page_settings, FluentIcon.SETTING, "设置")
+
+        # ---- 历史页 ----
+        from ui.history_page import HistoryPage
+        self.page_history = HistoryPage(self.agg.history)
+        self.addSubInterface(self.page_history, FluentIcon.HISTORY, "历史")
+        self._hist_timer = QTimer(self)
+        self._hist_timer.timeout.connect(self.page_history.refresh)
+        self._hist_timer.start(60000)
+
         self._wave_buf: list = []
+        self._current_detail_rows: list = []
+        self._tray_exit = False
+        self.alert_enabled = True
         self.worker = PollWorker(agg)
         self.worker.board_ready.connect(self._on_board, Qt.ConnectionType.QueuedConnection)
         self.worker.wave_ready.connect(self._on_wave, Qt.ConnectionType.QueuedConnection)
         self.worker.start()
+
+        # ---- 托盘 + 悬浮速率条 ----
+        self._init_tray()
+        self._init_badge()
+
+    # ---- 托盘 ----
+    def _init_tray(self) -> None:
+        from PySide6.QtWidgets import QSystemTrayIcon, QMenu
+        from PySide6.QtGui import QIcon
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "assets", "icon.ico")
+        self.tray = QSystemTrayIcon(QIcon(icon_path) if os.path.isfile(icon_path) else self.windowIcon(), self)
+        menu = QMenu()
+        act_show = menu.addAction("显示主界面")
+        act_help = menu.addAction("使用帮助")
+        menu.addSeparator()
+        act_quit = menu.addAction("退出")
+        act_show.triggered.connect(self._show_main)
+        act_help.triggered.connect(lambda: (self.show(), self.switchTo(self.page_help)))
+        act_quit.triggered.connect(self._quit_app)
+        self.tray.setContextMenu(menu)
+        self.tray.setToolTip("流量看板")
+        self.tray.activated.connect(
+            lambda reason: self._show_main() if reason == QSystemTrayIcon.ActivationReason.DoubleClick else None)
+        self.tray.show()
+
+    def _init_badge(self) -> None:
+        from ui.speed_badge import SpeedBadge
+        self.badge = SpeedBadge()
+        self.badge.double_clicked.connect(self._show_main)
+        self.badge.quit_requested.connect(self._quit_app)
+        self.badge.move(100, 100)
+        self.badge.show()
+
+    def _show_main(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_app(self) -> None:
+        self._tray_exit = True
+        self.close()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # 关窗默认最小化到托盘；只有托盘菜单"退出"才真正退出
+        if not self._tray_exit:
+            from PySide6.QtWidgets import QSystemTrayIcon
+            event.ignore()
+            self.hide()
+            self.tray.showMessage("流量看板", "已最小化到托盘，双击托盘图标可重新打开。",
+                                  QSystemTrayIcon.MessageIcon.Information, 2000)
+            return
+        try:
+            self.tray.hide()
+            self.badge.close()
+            self.worker.stop()
+            self.agg.stop()
+        finally:
+            event.accept()
+            os._exit(0)
+
+    def _detail_menu(self, pos) -> None:
+        """明细表右键菜单：复制 / Wireshark 抓包 / 断开代理连接 / 导出 CSV。"""
+        from PySide6.QtWidgets import QMenu, QApplication, QFileDialog
+        from core.tools import find_wireshark, export_connections_csv
+        import subprocess as _sp
+
+        row = self.table.rowAt(int(pos.y()))
+        cv = self._current_detail_rows[row] if 0 <= row < len(self._current_detail_rows) else None
+        menu = QMenu(self)
+        act_copy = menu.addAction("复制目标地址")
+        act_copy.setEnabled(cv is not None)
+        act_ws = menu.addAction("用 Wireshark 抓这条连接")
+        ws_path = find_wireshark()
+        act_ws.setEnabled(cv is not None and bool(ws_path) and bool(cv.raddr_ip) and cv.channel != "local")
+        act_kill = menu.addAction("断开此代理连接")
+        act_kill.setEnabled(cv is not None and bool(cv.conn_id))
+        menu.addSeparator()
+        act_csv = menu.addAction("导出全部连接为 CSV…")
+        chosen = menu.exec(self.table.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is act_copy and cv is not None:
+            QApplication.clipboard().setText(cv.target)
+        elif chosen is act_ws and cv is not None:
+            filt = f"host {cv.raddr_ip} and port {cv.raddr_port}"
+            _sp.Popen([ws_path, "-f", filt])
+        elif chosen is act_kill and cv is not None:
+            self.agg.clash.close_connection(cv.conn_id)
+        elif chosen is act_csv:
+            path, _ = QFileDialog.getSaveFileName(self, "导出连接列表",
+                                                  os.path.expanduser("~/Desktop/连接列表.csv"),
+                                                  "CSV (*.csv)")
+            if not path:
+                return
+            all_rows = []
+            for a in self._board.apps:
+                for c in a.conns:
+                    all_rows.append((a.display, a.proc_name, c.target, CHANNEL_LABEL[c.channel],
+                                     c.node, _fmt_bytes(c.download), _fmt_bytes(c.upload)))
+            export_connections_csv(path, all_rows)
 
     def _on_wave(self, down_bps: float, up_bps: float, pd: float, pu: float, online: bool) -> None:
         """全机真实流量波形（直连+代理都含），代理量作数字标注。"""
@@ -204,6 +353,7 @@ class MainWindow(FluentWindow):
         down_avg, up_avg, pd_avg, pu_avg = vals
         proxy_txt = f"    ·    经代理 ↓ {_fmt_bytes(pd_avg)}/s  ↑ {_fmt_bytes(pu_avg)}/s" if online else ""
         self.rate.setText(f"全机  ↓ {_fmt_bytes(down_avg)}/s    ↑ {_fmt_bytes(up_avg)}/s{proxy_txt}")
+        self.badge.set_speed(_fmt_bytes(down_avg) + "/s", _fmt_bytes(up_avg) + "/s")
         self._metric_mode = "bytes" if online else "count"
         self.rank_title.setText("软件排行（按代理流量）" if online else "软件排行（按连接数）")
 
@@ -217,7 +367,35 @@ class MainWindow(FluentWindow):
         else:
             self.status.setText("● Clash 未连接")
             self.status.setTextColor(QColor(150, 150, 150), QColor(120, 120, 120))
+        self._check_unknown(board)
         self._render()
+
+    def _check_unknown(self, board: Board) -> None:
+        """陌生连接检测：新 (进程, 目标) 对弹托盘通知（同进程每小时限 1 条）。"""
+        if not getattr(self, "alert_enabled", True):
+            return
+        from PySide6.QtWidgets import QSystemTrayIcon
+        pairs = set()
+        for a in board.apps:
+            for c in a.conns:
+                if c.channel == "proxy":
+                    pairs.add((a.proc_name, c.target))
+        if not pairs:
+            return
+        new = self.agg.known.filter_new(pairs)
+        if not new:
+            return
+        now = time.time()
+        announced = set()
+        for proc, target, _first_seen in new:
+            last = self._alert_ts.get(proc, 0)
+            if now - last < 3600 or proc in announced:
+                continue
+            announced.add(proc)
+            self._alert_ts[proc] = now
+            self.tray.showMessage("发现新的网络连接",
+                                  f"{proc} 首次连接：{target}",
+                                  QSystemTrayIcon.MessageIcon.Information, 3000)
 
     def _on_pick(self, pid: int) -> None:
         # 点击即选中（不做 toggle：误触两次会显得"没反应"）
@@ -245,6 +423,7 @@ class MainWindow(FluentWindow):
             return
 
         rows = [cv for cv in app.conns if not kw or kw in cv.target.lower()]
+        self._current_detail_rows = rows
         title = f"{app.display} 的连接（{len(app.conns)} 条）"
         key = (app.pid, tuple((cv.target, cv.channel) for cv in rows))
         struct_changed = key != self._detail_key

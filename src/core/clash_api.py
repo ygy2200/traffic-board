@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -19,6 +20,7 @@ _CANDIDATE_PORTS = [9090, 9097, 9095, 9091, 19090]
 
 @dataclass
 class ClashConn:
+    conn_id: str = ""
     process: str = ""
     host: str = ""
     dest_ip: str = ""
@@ -61,6 +63,7 @@ def parse_connections_payload(data: dict, version: str = "") -> ClashState:
         chains = c.get("chains")
         port_val = _int(m.get("destinationPort"))
         state.conns.append(ClashConn(
+            conn_id=str(c.get("id") or ""),
             process=str(m.get("process") or ""),
             host=str(m.get("host") or ""),
             dest_ip=str(m.get("destinationIP") or ""),
@@ -98,6 +101,18 @@ class ClashApiPoller:
     def snapshot(self) -> ClashState:
         with self._lock:
             return self.state
+
+    def close_connection(self, conn_id: str) -> bool:
+        """断开一条代理连接（DELETE /connections/:id）。"""
+        if not self.state.online or not conn_id:
+            return False
+        port = self.state.port or 9090
+        try:
+            r = self._session.delete(f"http://127.0.0.1:{port}/connections/{conn_id}",
+                                     headers=self._headers(), timeout=3)
+            return 200 <= r.status_code < 300
+        except Exception:
+            return False
 
     # ---- internals ----
     def _headers(self) -> Dict[str, str]:
