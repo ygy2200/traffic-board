@@ -413,7 +413,7 @@ class MainWindow(FluentWindow):
         if self.badge_enabled:
             self.badge.set_speed(_fmt_bytes(down_avg) + "/s", _fmt_bytes(up_avg) + "/s")
         self._metric_mode = "bytes" if online else "count"
-        self.rank_title.setText("软件排行（按代理流量）" if online else "软件排行（按连接数）")
+        self.rank_title.setText("软件排行（代理流量 · 本次运行累计）" if online else "软件排行（按连接数）")
 
     # ---- 数据流 ----
     def _on_board(self, board: Board) -> None:

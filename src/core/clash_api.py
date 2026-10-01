@@ -87,6 +87,7 @@ class ClashApiPoller:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._session = requests.Session()
+        self._last_port: Optional[int] = None   # 上次成功端口，重探测优先试它
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -97,10 +98,10 @@ class ClashApiPoller:
 
     def stop(self) -> None:
         self._stop.set()
-        # 等轮询线程退出（requests 超时上限 1.5s），避免 os._exit 时进程终止
-        # 例程杀掉正阻塞在 socket 读上的线程导致访问违例
+        # 等轮询线程退出：最坏情况 = 一个 GET 超时(1.5s) + _stop.wait(1.0)，
+        # 探测循环已响应停止信号。避免 os._exit 时进程终止例程杀掉阻塞中的线程。
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.5)
+            self._thread.join(timeout=7)
 
     def snapshot(self) -> ClashState:
         with self._lock:
@@ -123,12 +124,18 @@ class ClashApiPoller:
         return {"Authorization": f"Bearer {self.secret}"} if self.secret else {}
 
     def _probe(self) -> Optional[int]:
-        for port in _CANDIDATE_PORTS:
+        # 上次成功的端口优先（重探测/重启线程时秒级命中，不必扫完整候选表）
+        ports = ([self._last_port] if self._last_port else []) + \
+                [p for p in _CANDIDATE_PORTS if p != self._last_port]
+        for port in ports:
+            if self._stop.is_set():   # 停止信号下立即放弃探测，保证线程快速退出
+                return None
             try:
                 r = self._session.get(f"http://127.0.0.1:{port}/version",
-                                      headers=self._headers(), timeout=0.8)
+                                      headers=self._headers(), timeout=1.2)
                 if r.ok:
                     self._version = r.json().get("version", "")
+                    self._last_port = port
                     return port
             except Exception:
                 continue
@@ -155,7 +162,7 @@ class ClashApiPoller:
                 fail = 0
             except Exception:
                 fail += 1
-                if fail >= 3:  # 连续失败视为离线，重新探测
+                if fail >= 10:  # 连续 10 秒失败才视为离线（mihomo 偶发卡顿不应清空排行数据）
                     with self._lock:
                         self.state = ClashState(online=False)
                     port = None
