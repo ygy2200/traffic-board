@@ -97,6 +97,10 @@ class ClashApiPoller:
 
     def stop(self) -> None:
         self._stop.set()
+        # 等轮询线程退出（requests 超时上限 1.5s），避免 os._exit 时进程终止
+        # 例程杀掉正阻塞在 socket 读上的线程导致访问违例
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.5)
 
     def snapshot(self) -> ClashState:
         with self._lock:

@@ -37,44 +37,44 @@ class HistoryStore:
         return conn
 
     def _init_db(self) -> None:
-        ddl = ("CREATE TABLE IF NOT EXISTS totals_min("
-               " ts INTEGER PRIMARY KEY, up INTEGER, down INTEGER);"
-               "CREATE TABLE IF NOT EXISTS per_min("
-               " ts INTEGER, app TEXT, up INTEGER, down INTEGER, conns INTEGER,"
-               " PRIMARY KEY(ts, app));"
-               "CREATE INDEX IF NOT EXISTS idx_per_app ON per_min(app, ts);")
-        try:
-            self._conn = self._connect()
-            with self._lock:
-                self._conn.executescript(ddl)
-                self._conn.commit()
-        except sqlite3.DatabaseError:
-            # 库损坏：连 WAL/SHM 一起删除重建（防递归，重建失败则降级为无历史）
-            try:
-                if self._conn:
-                    self._conn.close()
-            except Exception:
-                pass
-            for suffix in ("", "-wal", "-shm"):
-                try:
-                    os.remove(self.db_path + suffix)
-                except OSError:
-                    pass
+        # 可能从 worker 线程(write_tick 重建路径)与主线程(退出 close)并发调用，整体持锁
+        with self._lock:
+            ddl = ("CREATE TABLE IF NOT EXISTS totals_min("
+                   " ts INTEGER PRIMARY KEY, up INTEGER, down INTEGER);"
+                   "CREATE TABLE IF NOT EXISTS per_min("
+                   " ts INTEGER, app TEXT, up INTEGER, down INTEGER, conns INTEGER,"
+                   " PRIMARY KEY(ts, app));"
+                   "CREATE INDEX IF NOT EXISTS idx_per_app ON per_min(app, ts);")
             try:
                 self._conn = self._connect()
-                with self._lock:
+                self._conn.executescript(ddl)
+                self._conn.commit()
+            except sqlite3.DatabaseError:
+                # 库损坏：连 WAL/SHM 一起删除重建（防递归，重建失败则降级为无历史）
+                try:
+                    if self._conn:
+                        self._conn.close()
+                except Exception:
+                    pass
+                for suffix in ("", "-wal", "-shm"):
+                    try:
+                        os.remove(self.db_path + suffix)
+                    except OSError:
+                        pass
+                try:
+                    self._conn = self._connect()
                     self._conn.executescript(ddl)
                     self._conn.commit()
-            except sqlite3.DatabaseError:
-                self._conn = None
+                except sqlite3.DatabaseError:
+                    self._conn = None
 
     def write_tick(self, ts: int, per_app: dict, total_up: int, total_down: int) -> None:
         """每分钟落库一次。per_app: {app: (up, down, conns)}。"""
-        conn = self._conn
-        if conn is None:
-            return
         try:
             with self._lock:
+                conn = self._conn   # 锁内取引用，防止与 close() 竞态拿到已关闭连接
+                if conn is None:
+                    return
                 conn.execute("INSERT OR REPLACE INTO totals_min(ts, up, down) VALUES(?,?,?)",
                              (int(ts), int(max(0, total_up)), int(max(0, total_down))))
                 conn.executemany(

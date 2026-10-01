@@ -51,6 +51,10 @@ class DnsCacheReader:
                 self._proc.kill()
             except Exception:
                 pass
+        # 等 reader 线程退出管道读，否则 os._exit 终止进程时会撞上
+        # 还持有管道读锁的线程导致访问违例（实测 40% 复现的退出段错误）
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
 
     def snapshot(self) -> Dict[str, str]:
         with self._lock:

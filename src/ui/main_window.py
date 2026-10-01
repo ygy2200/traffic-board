@@ -121,6 +121,18 @@ def _channel(cv) -> str:
     return "本地/内网"
 
 
+def _hard_exit(code: int = 0) -> None:
+    """Windows 硬杀自进程。os._exit 在 Windows 走 CRT exit()，仍执行 DLL
+    detach 等运行时清理，会撞上采样线程残留的 Qt 线程存储导致段错误
+    （实测约 1/3 复现）；TerminateProcess 跳过一切清理，立即终止。"""
+    try:
+        import ctypes
+        ctypes.windll.kernel32.TerminateProcess(
+            ctypes.windll.kernel32.GetCurrentProcess(), code)
+    except Exception:
+        os._exit(code)
+
+
 class MainWindow(FluentWindow):
     def __init__(self, agg: Aggregator) -> None:
         super().__init__()
@@ -318,11 +330,13 @@ class MainWindow(FluentWindow):
             self.badge.close()
             self.worker.stop()
             if not self.worker.wait(5000):
-                print("[退出] 采样线程未在 5 秒内结束，强制退出", flush=True)
+                # 采样线程还活着（psutil 偶发慢查询/写库卡住）：
+                # 此时关 SQLite 会与它并发写同一连接导致崩溃，直接终止进程
+                _hard_exit(0)
             self.agg.stop()
         finally:
             event.accept()
-            os._exit(0)
+            _hard_exit(0)
 
     def _detail_menu(self, pos) -> None:
         """明细表右键菜单：复制 / Wireshark 抓包 / 断开代理连接 / 导出 CSV。"""
@@ -500,14 +514,6 @@ class MainWindow(FluentWindow):
 def _detail_row_vals(cv):
     return [annotate(cv.target), _channel(cv), _fmt_bytes(cv.download), _fmt_bytes(cv.upload)]
 
-    def closeEvent(self, event) -> None:  # noqa: N802
-        try:
-            self.worker.stop()
-            self.agg.stop()
-        finally:
-            event.accept()
-            os._exit(0)
-
 
 def run_app() -> int:
     app = QApplication(sys.argv)
@@ -515,4 +521,4 @@ def run_app() -> int:
     w = MainWindow(agg)
     w.show()
     code = app.exec()
-    os._exit(code)
+    _hard_exit(code)

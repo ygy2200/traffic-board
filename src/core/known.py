@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 
 
@@ -18,6 +19,7 @@ class KnownPeers:
         self._seen: set = set()
         self._pending: list = []
         self._conn: sqlite3.Connection | None = None
+        self._lock = threading.Lock()   # filter_new(主线程)/flush、close(worker 与主线程) 跨线程
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -63,15 +65,20 @@ class KnownPeers:
     def filter_new(self, pairs: set) -> list:
         """返回其中从未见过的 (proc, target) 列表，并标记为已见（待落库）。"""
         new = []
-        for pair in pairs:
-            if pair not in self._seen:
-                self._seen.add(pair)
-                new.append((pair[0], pair[1], int(time.time())))
-                self._pending.append(pair)
+        with self._lock:
+            for pair in pairs:
+                if pair not in self._seen:
+                    self._seen.add(pair)
+                    new.append((pair[0], pair[1], int(time.time())))
+                    self._pending.append(pair)
         return new
 
     def flush(self) -> None:
         """批量落库（60 秒节流/退出时）。"""
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
         if not self._pending or self._conn is None:
             self._pending = []
             return
@@ -86,10 +93,11 @@ class KnownPeers:
         self._pending = []
 
     def close(self) -> None:
-        self.flush()
-        if self._conn:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
-            self._conn = None
+        with self._lock:
+            self._flush_locked()
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
