@@ -141,7 +141,11 @@ class MainWindow(FluentWindow):
         self.resize(1000, 700)
         self.agg = agg
         self._board = Board()
-        self._selected_pid = None
+        # 启动恢复"强制传统模式"开关（设置页持久化）
+        if QSettings("TrafficBoard", "TrafficBoard").value(
+                "forceLegacyMode", False, type=bool):
+            agg.set_force_legacy(True)
+        self._selected_key = ""
         self._last_bytes = None
         self._metric_mode = "bytes"
         self._detail_key = None
@@ -231,7 +235,7 @@ class MainWindow(FluentWindow):
 
         # ---- 设置页 ----
         from ui.settings_page import SettingsPage
-        self.page_settings = SettingsPage()
+        self.page_settings = SettingsPage(self.agg)
         self.addSubInterface(self.page_settings, FluentIcon.SETTING, "设置")
 
         # ---- 历史页 ----
@@ -241,6 +245,11 @@ class MainWindow(FluentWindow):
         self._hist_timer = QTimer(self)
         self._hist_timer.timeout.connect(self.page_history.refresh)
         self._hist_timer.start(60000)
+
+        # ---- 体检页 ----
+        from ui.health_page import HealthPage
+        self.page_health = HealthPage(self.agg)
+        self.addSubInterface(self.page_health, FluentIcon.HEART, "体检")
 
         self._wave_buf: list = []
         self._current_detail_rows: list = []
@@ -455,20 +464,21 @@ class MainWindow(FluentWindow):
                                   f"{proc} 首次连接：{target}",
                                   QSystemTrayIcon.MessageIcon.Information, 3000)
 
-    def _on_pick(self, pid: int) -> None:
+    def _on_pick(self, key: str) -> None:
         # 点击即选中（不做 toggle：误触两次会显得"没反应"）
-        self._selected_pid = pid
+        self._selected_key = key
         self._render()
 
     def _render(self) -> None:
         b = self._board
-        self.rank.render(b.apps, self._metric_mode, self._selected_pid, self.search.text())
+        self.rank.render(b.apps, self._metric_mode, self._selected_key, self.search.text())
         self._render_detail()
+        self.page_health.set_mode(b.data_mode, b.tun_state)
 
     def _render_detail(self) -> None:
         """明细表增量更新：结构不变时只改文本（不再每秒新建 item）。"""
         b = self._board
-        app = next((a for a in b.apps if a.pid == self._selected_pid), None)
+        app = next((a for a in b.apps if a.key == self._selected_key), None)
         kw = self.search.text().strip().lower()
         if app is None:
             if self._detail_key != ("none", ""):
@@ -483,7 +493,7 @@ class MainWindow(FluentWindow):
         rows = [cv for cv in app.conns if not kw or kw in cv.target.lower()]
         self._current_detail_rows = rows
         title = f"{app.display} 的连接（{len(app.conns)} 条）"
-        key = (app.pid, tuple((cv.target, cv.channel) for cv in rows))
+        key = (app.key, tuple((cv.target, cv.channel) for cv in rows))
         struct_changed = key != self._detail_key
         if self._detail_title_text != title:
             self.detail_title.setText(title)

@@ -19,10 +19,11 @@ def _exe_path() -> str:
 
 
 class SettingsPage(QWidget):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, agg=None, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPage")
         self._settings = QSettings("TrafficBoard", "TrafficBoard")
+        self._agg = agg
         self._loading = True
         v = QVBoxLayout(self)
         v.setContentsMargins(24, 20, 24, 20)
@@ -89,12 +90,29 @@ class SettingsPage(QWidget):
         c4.addWidget(note4)
         v.addWidget(card4)
 
+        # ---- 数据源 ----
+        card_ds = CardWidget(self)
+        cds = QVBoxLayout(card_ds)
+        cds.setContentsMargins(16, 12, 16, 12)
+        cds.addWidget(BodyLabel("数据源"))
+        self.sw_legacy = SwitchButton("强制传统模式（排查用）", card_ds)
+        self.sw_legacy.setChecked(
+            self._settings.value("forceLegacyMode", False, type=bool))
+        self.sw_legacy.checkedChanged.connect(self._on_force_legacy)
+        cds.addWidget(self.sw_legacy)
+        note_ds = CaptionLabel(
+            "默认：TUN 开启时直接使用 Clash 内核的连接数据（更快、UDP 明细更全）。\n"
+            "勾选后始终使用系统连接表扫描（旧路径，数据不变但更耗资源）。")
+        note_ds.setStyleSheet("color: rgb(160,160,160);")
+        cds.addWidget(note_ds)
+        v.addWidget(card_ds)
+
         # ---- 关于 ----
         card5 = CardWidget(self)
         c5 = QVBoxLayout(card5)
         c5.setContentsMargins(16, 12, 16, 12)
         c5.addWidget(BodyLabel("关于"))
-        about = CaptionLabel("流量看板 Traffic Board v1.5 · 开源：github.com/ygy2200/traffic-board\n"
+        about = CaptionLabel("流量看板 Traffic Board v1.6 · 开源：github.com/ygy2200/traffic-board\n"
                              "数据全部在本机采集与显示，不上传任何内容。")
         about.setStyleSheet("color: rgb(170,170,170);")
         c5.addWidget(about)
@@ -133,3 +151,8 @@ class SettingsPage(QWidget):
         win = self.window()
         if hasattr(win, "alert_enabled"):
             win.alert_enabled = checked
+
+    def _on_force_legacy(self, checked: bool) -> None:
+        self._settings.setValue("forceLegacyMode", "1" if checked else "0")
+        if self._agg is not None:
+            self._agg.set_force_legacy(checked)

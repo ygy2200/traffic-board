@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """软件排行列表 v4：增量更新（消除每秒全量重建导致的滚动卡顿）。
 
-核心改动：行 widget 按 pid 键控复用，每秒只 setText 变化的字段；
-顺序未变时不做任何布局操作；差集行才创建/销毁。
+核心改动：行 widget 按应用键（proc_name，v1.6 起兼容 TUN 单源无 pid）键控复用，
+每秒只 setText 变化的字段；顺序未变时不做任何布局操作；差集行才创建/销毁。
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _fmt_bytes(n: int) -> str:
 
 
 class RankRow(QWidget):
-    clicked_pid = Signal(int)
+    clicked_key = Signal(str)
 
     def __init__(self, app, share: float, metric: str, selected: bool, parent=None) -> None:
         super().__init__(parent)
@@ -66,8 +66,8 @@ class RankRow(QWidget):
         for lbl in (self.lbl_name, self.lbl_metric, self.lbl_value):
             lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
-    def pid(self) -> int:
-        return self._app.pid
+    def key(self) -> str:
+        return self._app.key
 
     def update_data(self, app, share: float, metric: str, selected: bool) -> None:
         """秒级增量更新：只改真正变化的字段。"""
@@ -110,7 +110,7 @@ class RankRow(QWidget):
 
 
 class RankList(QWidget):
-    row_clicked = Signal(int)
+    row_clicked = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -127,7 +127,7 @@ class RankList(QWidget):
         self.scroll.enableTransparentBackground()
         self.scroll.setWidget(self.container)
         v.addWidget(self.scroll)
-        self._rows_by_pid: dict[int, RankRow] = {}
+        self._rows_by_key: dict[str, RankRow] = {}
         self._hint: QLabel | None = None
         # 点击处理装在 viewport 的事件过滤器上：真机鼠标事件必经 viewport，
         # 不依赖子类 mousePressEvent 的分发行为
@@ -141,11 +141,11 @@ class RankList(QWidget):
                 while w is not None and not isinstance(w, RankRow):
                     w = w.parentWidget()
                 if isinstance(w, RankRow):
-                    self.row_clicked.emit(w.pid())
+                    self.row_clicked.emit(w.key())
                     return True
         return super().eventFilter(obj, event)
 
-    def render(self, apps, metric_mode: str, selected_pid, keyword: str) -> None:
+    def render(self, apps, metric_mode: str, selected_key, keyword: str) -> None:
         kw = keyword.strip().lower()
         apps = [a for a in apps if not kw or kw in a.display.lower() or kw in a.proc_name.lower()
                 or any(kw in c.target.lower() for c in a.conns)]
@@ -157,9 +157,9 @@ class RankList(QWidget):
             shares = self._shares(apps, key=lambda a: len(a.conns))
 
         # ---- 差集：删除消失的行 ----
-        keep = {a.pid for a in apps}
-        for pid in [p for p in self._rows_by_pid if p not in keep]:
-            row = self._rows_by_pid.pop(pid)
+        keep = {a.key for a in apps}
+        for k in [x for x in self._rows_by_key if x not in keep]:
+            row = self._rows_by_key.pop(k)
             self.v.removeWidget(row)
             row.deleteLater()
         self._set_hint(None)
@@ -169,13 +169,13 @@ class RankList(QWidget):
         for a in apps:
             metric = f"代理 {a.proxy_count} · 直连 {a.direct_count}" if a.proxy_count \
                 else f"连接 {len(a.conns)}"
-            row = self._rows_by_pid.get(a.pid)
+            row = self._rows_by_key.get(a.key)
             if row is None:
-                row = RankRow(a, shares.get(a.pid, 0.03), metric, selected=(selected_pid == a.pid))
-                row.clicked_pid.connect(self.row_clicked.emit)
-                self._rows_by_pid[a.pid] = row
+                row = RankRow(a, shares.get(a.key, 0.03), metric, selected=(selected_key == a.key))
+                row.clicked_key.connect(self.row_clicked.emit)
+                self._rows_by_key[a.key] = row
             else:
-                row.update_data(a, shares.get(a.pid, 0.03), metric, selected=(selected_pid == a.pid))
+                row.update_data(a, shares.get(a.key, 0.03), metric, selected=(selected_key == a.key))
             target_widgets.append(row)
 
         # ---- 顺序：仅在目标顺序与当前不同时重排（避免每秒布局抖动）----
@@ -206,8 +206,8 @@ class RankList(QWidget):
 
     @staticmethod
     def _shares(apps, key) -> dict:
-        vals = {a.pid: key(a) for a in apps}
+        vals = {a.key: key(a) for a in apps}
         total = sum(vals.values())
         if total <= 0:
-            return {pid: 0.03 for pid in vals}
-        return {pid: v / total for pid, v in vals.items()}
+            return {k: 0.03 for k in vals}
+        return {k: v / total for k, v in vals.items()}

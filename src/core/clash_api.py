@@ -22,6 +22,7 @@ _CANDIDATE_PORTS = [9090, 9097, 9095, 9091, 19090]
 class ClashConn:
     conn_id: str = ""
     process: str = ""
+    process_path: str = ""
     host: str = ""
     dest_ip: str = ""
     dest_port: int = 0
@@ -62,9 +63,13 @@ def parse_connections_payload(data: dict, version: str = "") -> ClashState:
         m = c.get("metadata") if isinstance(c.get("metadata"), dict) else {}
         chains = c.get("chains")
         port_val = _int(m.get("destinationPort"))
+        process_path = str(m.get("processPath") or "")
+        if len(process_path) > 260:   # 畸形超长路径不进内存/不进 UI
+            process_path = ""
         state.conns.append(ClashConn(
             conn_id=str(c.get("id") or ""),
             process=str(m.get("process") or ""),
+            process_path=process_path,
             host=str(m.get("host") or ""),
             dest_ip=str(m.get("destinationIP") or ""),
             dest_port=port_val if 0 <= port_val <= 65535 else 0,

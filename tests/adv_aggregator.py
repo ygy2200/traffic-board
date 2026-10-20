@@ -179,10 +179,112 @@ def test_local_semantics():
     print("本地网段判定 PASS")
 
 
+# ---------- v1.6 TUN 单源模式 ----------
+
+def _tun_conn(cid, proc, up, down, host="cdn.example.com", network="tcp",
+              chains=("香港01", "机场组")):
+    return ClashConn(conn_id=cid, process=proc, host=host,
+                     dest_ip="1.2.3.4" if not host else "", dest_port=443,
+                     network=network, chains=list(chains), upload=up, download=down)
+
+
+def test_tun_single_source(monkey_agg: Aggregator):
+    """TUN 单源：不用 psutil、不用 DNS；UDP/裸 IP/畸形 process 全兜住。"""
+    _reset_cum(monkey_agg)
+    monkey_agg.tun.snapshot = lambda: TunState.ON  # type: ignore
+
+    def _psutil_must_not_run():
+        raise AssertionError("TUN 单源模式不得调用 psutil 全表扫描")
+    monkey_agg.poller.poll = _psutil_must_not_run  # type: ignore
+
+    monkey_agg.clash.state = _fake_clash_state([
+        _tun_conn("c1", "app.exe", 100, 200, host="a.com"),
+        _tun_conn("c2", "app.exe", 10, 20, host="", network="udp"),      # UDP 裸 IP
+        _tun_conn("c3", "x" * 4096, 0, 0, host="b.com"),                 # 超长进程名
+        _tun_conn("c4", "direct.exe", 5, 8, chains=("DIRECT",)),         # 直连出站
+        ClashConn(conn_id="", process="", host="", chains=[]),           # 空进程/空 id
+    ])
+    b = monkey_agg.build()
+    assert b.data_mode == "tun" and b.tun_state == "on"
+    assert b.sys_conn_count == 0 and b.dns_count == 0          # 两条重路径均未消费
+    names = {a.proc_name for a in b.apps}
+    assert "app.exe" in names and "direct.exe" in names and "未知进程" in names
+    app = next(a for a in b.apps if a.proc_name == "app.exe")
+    assert len(app.conns) == 2 and app.pid == 0                # 同名合并；pid 无源
+    udp = next(cv for cv in app.conns if cv.proto == "udp")
+    assert udp.target == "1.2.3.4:443" and udp.channel == "proxy"   # UDP 也有真实五元组+出站
+    assert (app.upload, app.download) == (110, 220)            # 累计器语义不变
+    direct = next(a for a in b.apps if a.proc_name == "direct.exe")
+    assert direct.conns[0].channel == "direct"                 # DIRECT 出站不算代理
+    assert monkey_agg.tun.snapshot() is TunState.ON
+    print("TUN 单源构建（psutil/DNS 零消费 + UDP/畸形兜底）PASS")
+
+
+def test_tun_unknown_falls_back(monkey_agg: Aggregator):
+    """TUN 判定 UNKNOWN（佐证未命中）→ 保守回退 legacy，不许单源。"""
+    _reset_cum(monkey_agg)
+    monkey_agg.tun.snapshot = lambda: TunState.UNKNOWN  # type: ignore
+    monkey_agg.poller.poll = lambda: _fake_sys([("1.2.3.4", 443, "app.exe", "tcp")])
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 1, 2)])
+    b = monkey_agg.build()
+    assert b.data_mode == "legacy" and b.tun_state == "unknown"
+    assert b.sys_conn_count == 1                                # psutil 有被消费
+    print("UNKNOWN 回退 legacy PASS")
+
+
+def test_mode_switch_cum_continuous(monkey_agg: Aggregator):
+    """legacy → TUN → legacy 模式来回切，进程累计数值单调连续。"""
+    _reset_cum(monkey_agg)
+    monkey_agg.poller.poll = lambda: _fake_sys([("1.2.3.4", 443, "app.exe", "tcp")])
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 100, 100)])
+    b1 = monkey_agg.build()
+    assert b1.data_mode == "legacy"
+    monkey_agg.tun.snapshot = lambda: TunState.ON  # type: ignore
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 150, 180)])
+    b2 = monkey_agg.build()
+    a2 = next(x for x in b2.apps if x.proc_name == "app.exe")
+    assert (a2.upload, a2.download) == (150, 180)
+    monkey_agg.tun.snapshot = lambda: TunState.OFF  # type: ignore
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 200, 260)])
+    b3 = monkey_agg.build()
+    a3 = next(x for x in b3.apps if x.proc_name == "app.exe")
+    assert (a3.upload, a3.download) == (200, 260), f"模式切换累计断裂: {a3.upload},{a3.download}"
+    print("模式切换累计连续 PASS")
+
+
+def test_force_legacy(monkey_agg: Aggregator):
+    """设置页"强制传统模式"：即使 TUN=ON 也走 legacy。"""
+    _reset_cum(monkey_agg)
+    monkey_agg.tun.snapshot = lambda: TunState.ON  # type: ignore
+    monkey_agg.poller.poll = lambda: _fake_sys([("1.2.3.4", 443, "app.exe", "tcp")])
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 1, 1)])
+    monkey_agg.set_force_legacy(True)
+    try:
+        b = monkey_agg.build()
+        assert b.data_mode == "legacy" and b.sys_conn_count == 1
+    finally:
+        monkey_agg.set_force_legacy(False)
+    print("强制传统模式开关 PASS")
+
+
+def test_tun_key_unique(monkey_agg: Aggregator):
+    """UI 行键唯一性：TUN 下多软件 key 不得互相覆盖（pid 全 0 的历史坑）。"""
+    _reset_cum(monkey_agg)
+    monkey_agg.tun.snapshot = lambda: TunState.ON  # type: ignore
+    monkey_agg.clash.state = _fake_clash_state([
+        _tun_conn("c1", "a.exe", 1, 1), _tun_conn("c2", "b.exe", 2, 2)])
+    b = monkey_agg.build()
+    keys = [a.key for a in b.apps]
+    assert len(keys) == len(set(keys)) == 2, f"key 冲突: {keys}"
+    print("TUN 行键唯一 PASS")
+
+
 if __name__ == "__main__":
+    from core.tun_detect import TunState  # noqa: E402
     agg = Aggregator()
     agg.start = lambda: None  # 隔离：阻止 build() 拉起真实数据源线程
     agg.clash.state.__dict__["online"] = False
+    agg.tun.snapshot = lambda: TunState.OFF  # type: ignore
     test_evil_sysdata(agg)
     test_evil_dns_map(agg)
     test_rank_cum_monotonic(agg)
@@ -191,5 +293,10 @@ if __name__ == "__main__":
     test_rank_cum_negative_delta(agg)
     test_concurrent_build()
     test_local_semantics()
+    test_tun_single_source(agg)
+    test_tun_unknown_falls_back(agg)
+    test_mode_switch_cum_continuous(agg)
+    test_force_legacy(agg)
+    test_tun_key_unique(agg)
     agg.stop()
     print("adv_aggregator 全部通过")

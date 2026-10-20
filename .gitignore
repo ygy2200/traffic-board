@@ -5,3 +5,5 @@ dist/
 *.spec.bak
 tests/screen*.png
 tmp/
+out/
+*.zip

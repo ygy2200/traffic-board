@@ -52,7 +52,23 @@ def test_node_of_semantics():
     print("节点提取语义 PASS")
 
 
+def test_process_path():
+    """v1.6 新字段 processPath：正常/缺失/非字符串/超长截断。"""
+    s = parse_connections_payload({"connections": [
+        {"metadata": {"process": "a.exe", "processPath": "C:\\Program Files\\a.exe"}},
+        {"metadata": {"process": "b.exe"}},                                  # 缺失
+        {"metadata": {"process": "c.exe", "processPath": 12345}},            # 非字符串
+        {"metadata": {"process": "d.exe", "processPath": "D:\\" + "x" * 300}},
+    ]})
+    assert s.conns[0].process_path == "C:\\Program Files\\a.exe"
+    assert s.conns[1].process_path == ""
+    assert s.conns[2].process_path == "12345"
+    assert s.conns[3].process_path == ""                # >260 截断丢弃，不进 UI
+    print("processPath 字段防护 PASS")
+
+
 if __name__ == "__main__":
     test_attacks()
     test_node_of_semantics()
+    test_process_path()
     print("adv_clash_api 全部通过")

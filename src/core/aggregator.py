@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
-"""数据聚合：系统连接表 + DNS 缓存 + Clash API → 每软件的渠道画像。
+"""数据聚合：TUN 单源（mihomo 全系统连接表）或 legacy 双源 → 每软件渠道画像。
 
-渠道判定优先级：
-1. Clash API 在线：按进程名合并其连接（域名/节点/字节最全）
-2. 系统连接表：目标=本机代理端口 → 经代理；本机/内网 → 本地；其余 → 直连
-域名解析：Clash host > DNS 缓存 > 裸 IP。
+数据源调度（build 时判定）：
+1. TUN 单源模式：Clash API 在线 + TUN 判定 ON（TunDetector 双确认）→
+   mihomo /connections 即全系统连接表（实测 process 100% 覆盖），
+   跳过 psutil 全表扫描与 DNS 缓存消费（提速主路径）
+2. legacy 双源模式：其余情况走原有三源合并，逻辑不变
+
+渠道判定：Clash chains 含真节点 → 代理，否则直连；
+legacy 下系统表另按目标端口/网段判定。
+域名解析：Clash host > DNS 缓存 > 裸 IP（legacy）。
 """
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ from .appnames import display_name
 from .clash_api import ClashApiPoller, ClashState
 from .connections import ConnectionPoller, Snapshot
 from .dns_cache import DnsCacheReader
+from .tun_detect import TunDetector, TunState
 
 _CHANNEL_PROXY = "proxy"
 _CHANNEL_DIRECT = "direct"
@@ -44,6 +50,12 @@ class AppView:
     conns: List[ConnView] = field(default_factory=list)
     _upload_override: Optional[int] = None    # 进程级单调累计（见 Aggregator._update_proc_cum）
     _download_override: Optional[int] = None
+
+    @property
+    def key(self) -> str:
+        """UI 行键：按软件而非 pid（mihomo TUN 单源无 pid，legacy 同名合并后
+        pid 也只是代表，按 pid 键控会让全 0 行互相覆盖）。"""
+        return self.proc_name.lower()
 
     @property
     def proxy_count(self) -> int:
@@ -82,6 +94,8 @@ class Board:
     dns_count: int = 0
     sys_conn_count: int = 0
     sys_partial: bool = False
+    data_mode: str = "legacy"   # 'tun'=TUN 单源 | 'legacy'=传统双源
+    tun_state: str = "off"      # TunState.value（on/off/unknown）
 
 
 class Aggregator:
@@ -96,29 +110,79 @@ class Aggregator:
         from .known import KnownPeers
         self.known = KnownPeers()
         self.proxy_ports = set(proxy_ports or [7890, 7897, 10809])
+        self.tun = TunDetector(self.clash)
+        self._force_legacy = False
         self._started = False
         # 进程级单调累计（修复排行数值随连接断开回退的问题）
         self._conn_last: Dict[str, tuple] = {}    # conn_id -> (up, down) 最后快照
         self._proc_cum: Dict[str, tuple] = {}     # proc_name(lower) -> (up, down) 累计
+
+    def set_force_legacy(self, force: bool) -> None:
+        """设置页"强制传统模式"开关（排查用）；下一次 build 生效。"""
+        self._force_legacy = bool(force)
 
     def start(self) -> None:
         if not self._started:
             self._started = True
             self.dns.start()
             self.clash.start()
+            self.tun.start()
 
     def stop(self) -> None:
         if self._started:
             self.dns.stop()
             self.clash.stop()
+            self.tun.stop()
             self.history.close()
             self.known.close()
 
     def build(self) -> Board:
         self.start()
+        clash = self.clash.snapshot()
+        tun = self.tun.snapshot()
+        use_tun = (clash.online and not self._force_legacy and tun == TunState.ON)
+        if use_tun:
+            board = self._build_tun(clash)
+            board.data_mode = "tun"
+        else:
+            board = self._build_legacy(clash)
+            board.data_mode = "legacy"
+        board.tun_state = tun.value
+        return board
+
+    def _build_tun(self, clash: ClashState) -> Board:
+        """TUN 单源：mihomo 连接表即全系统连接表。跳过 psutil 与 DNS 缓存。"""
+        board = Board(clash_online=True, clash_version=clash.version)
+        self._update_proc_cum(clash)
+        apps: Dict[str, AppView] = {}
+        for cc in clash.conns:
+            proc_name = cc.process or "未知进程"
+            k = proc_name.lower()
+            a = apps.get(k)
+            if a is None:
+                a = apps[k] = AppView(pid=0, proc_name=proc_name,
+                                      display=display_name(proc_name))
+            node = self._node_of(cc.chains)
+            target = cc.host or (f"{cc.dest_ip}:{cc.dest_port}" if cc.dest_ip else "未知")
+            a.conns.append(ConnView(
+                proto=cc.network, target=target,
+                channel=_CHANNEL_PROXY if node else _CHANNEL_DIRECT,
+                node=node, upload=cc.upload, download=cc.download,
+                from_clash=True, conn_id=cc.conn_id,
+                raddr_ip=cc.dest_ip, raddr_port=cc.dest_port))
+        # 排行显示进程级单调累计值（与 legacy 相同语义，防连接断开回退）
+        for a in apps.values():
+            cum = self._proc_cum.get(a.proc_name.lower())
+            if cum and (cum[0] or cum[1]):
+                a.upload, a.download = cum
+        board.apps = sorted(apps.values(),
+                            key=lambda a: (-len(a.conns), a.display.lower()))
+        return board
+
+    def _build_legacy(self, clash: ClashState) -> Board:
+        """传统双源：系统连接表 + DNS 缓存 + Clash API（v1.5.5 原逻辑）。"""
         sys_snap: Snapshot = self.poller.poll()
         dns_map: Dict[str, str] = self.dns.snapshot()
-        clash = self.clash.snapshot()
 
         board = Board(
             clash_online=clash.online,
@@ -137,6 +201,7 @@ class Aggregator:
 
         # --- Clash 连接（在线时提供代理侧明细；DIRECT 的也会重复出现在系统表，去重见下） ---
         clash_used_targets: set = set()
+        clash_used_procs: set = set()
         if clash.online:
             self._update_proc_cum(clash)
             for cc in clash.conns:
@@ -151,6 +216,7 @@ class Aggregator:
                               raddr_ip=cc.dest_ip, raddr_port=cc.dest_port)
                 app_of(pid, proc_name).conns.append(cv)
                 clash_used_targets.add((proc_name, target, cv.proto))
+                clash_used_procs.add(proc_name.lower())
 
         # --- 系统连接表（全量兜底，去 Clash 已覆盖的进程+目标） ---
         for sc in sys_snap.conns:
@@ -173,8 +239,12 @@ class Aggregator:
                     target = f"{dom}:{sc.raddr_port}" if dom else f"{sc.raddr_ip}:{sc.raddr_port}"
                     node = ""
             key = (sc.proc_name, target, sc.proto)
-            if clash.online and channel == _CHANNEL_DIRECT and key in clash_used_targets:
-                continue  # Clash 已按域名展示同进程同目标，避免双份
+            if clash.online and channel == _CHANNEL_PROXY \
+                    and (key in clash_used_targets
+                         or sc.proc_name.lower() in clash_used_procs):
+                # Clash 已按真实域名展示该进程的代理流量；
+                # "127.0.0.1:7890（代理入口）"行无信息量，省去（2026-10-04 复盘项）
+                continue
             app_of(sc.pid, sc.proc_name).conns.append(
                 ConnView(proto=sc.proto, target=target, channel=channel, node=node,
                          raddr_ip=sc.raddr_ip, raddr_port=sc.raddr_port))
@@ -247,7 +317,8 @@ if __name__ == "__main__":
     time.sleep(3)
     b = agg.build()
     print(f"Clash: {'在线 ' + b.clash_version if b.clash_online else '离线(降级)'} | "
-          f"DNS映射 {b.dns_count} | 系统连接 {b.sys_conn_count} | 软件数 {len(b.apps)}")
+          f"模式 {b.data_mode}(tun={b.tun_state}) | DNS映射 {b.dns_count} | "
+          f"系统连接 {b.sys_conn_count} | 软件数 {len(b.apps)}")
     for a in b.apps[:6]:
         print(f"  {a.display} ({a.proc_name}) 连接{len(a.conns)} 代理{a.proxy_count}")
         for cv in a.conns[:3]:
