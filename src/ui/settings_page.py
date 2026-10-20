@@ -5,10 +5,10 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, CardWidget, SwitchButton, SubtitleLabel,
+    BodyLabel, CaptionLabel, CardWidget, SpinBox, SwitchButton, SubtitleLabel,
 )
 
 from core.tools import get_autostart, set_autostart
@@ -107,7 +107,38 @@ class SettingsPage(QWidget):
         cds.addWidget(note_ds)
         v.addWidget(card_ds)
 
-        # ---- 关于 ----
+        # ---- 月流量上限 ----
+        card_q = CardWidget(self)
+        cq = QVBoxLayout(card_q)
+        cq.setContentsMargins(16, 12, 16, 12)
+        cq.addWidget(BodyLabel("月流量上限"))
+        note_q = CaptionLabel(
+            "按计费周期统计「经代理的流量」（不含校园网等本地流量）。"
+            "用到 80% 时托盘预警一次，超限再提醒一次；同一周期不重复打扰。0 = 不限。")
+        note_q.setStyleSheet("color: rgb(160,160,160);")
+        note_q.setWordWrap(True)
+        cq.addWidget(note_q)
+        row_q = QHBoxLayout()
+        row_q.addWidget(BodyLabel("上限"))
+        self.sp_cap = SpinBox(card_q)
+        self.sp_cap.setRange(0, 100000)
+        self.sp_cap.setSuffix(" GB")
+        self.sp_cap.setValue(int(float(self._settings.value("quota/cap_gb", 0.0) or 0.0)))
+        self.sp_cap.valueChanged.connect(self._on_quota)
+        row_q.addWidget(self.sp_cap)
+        row_q.addSpacing(20)
+        row_q.addWidget(BodyLabel("重置日"))
+        self.sp_reset = SpinBox(card_q)
+        self.sp_reset.setRange(1, 28)
+        self.sp_reset.setSuffix(" 号")
+        self.sp_reset.setValue(int(self._settings.value("quota/reset_day", 1) or 1))
+        self.sp_reset.valueChanged.connect(self._on_quota)
+        row_q.addWidget(self.sp_reset)
+        row_q.addStretch(1)
+        cq.addLayout(row_q)
+        v.addWidget(card_q)
+
+    # ---- 关于 ----
         card5 = CardWidget(self)
         c5 = QVBoxLayout(card5)
         c5.setContentsMargins(16, 12, 16, 12)
@@ -156,3 +187,14 @@ class SettingsPage(QWidget):
         self._settings.setValue("forceLegacyMode", "1" if checked else "0")
         if self._agg is not None:
             self._agg.set_force_legacy(checked)
+
+    def _on_quota(self) -> None:
+        if getattr(self, "_loading", False):
+            return
+        cap = float(self.sp_cap.value())
+        reset = int(self.sp_reset.value())
+        self._settings.setValue("quota/cap_gb", cap)
+        self._settings.setValue("quota/reset_day", reset)
+        win = self.window()
+        if hasattr(win, "set_quota"):
+            win.set_quota(cap, reset)

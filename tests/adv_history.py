@@ -60,8 +60,35 @@ def test_negative_and_huge():
     print("负数/超大值防护 PASS")
 
 
+def test_total_and_proxy_queries():
+    """R7：总览/配额查询——全机总量与代理分量（本地流量不计入套餐）。"""
+    db = os.path.join(tempfile.gettempdir(), "tb_adv_hist3.sqlite")
+    for s in ("", "-wal", "-shm"):
+        try:
+            os.remove(db + s)
+        except OSError:
+            pass
+    h = HistoryStore(db)
+    now = int(time.time())
+    h.write_tick(now - 30, {"app.exe": (100, 900, 1)}, 5000, 50000)
+    h.write_tick(now - 10, {"app.exe": (50, 100, 1)}, 1000, 9000)
+    # 全机总量 = 两拍之和
+    up, down = h.query_total_since(now - 3600)
+    assert (up, down) == (6000, 59000), (up, down)
+    # 代理分量只含 per_min（app.exe 两拍）
+    pup, pdown = h.query_proxy_total_since(now - 3600)
+    assert (pup, pdown) == (150, 1000), (pup, pdown)
+    # 时间窗之外查不到
+    assert h.query_total_since(now + 60) == (0, 0)
+    assert h.query_proxy_total_since(now + 60) == (0, 0)
+    h.close()
+    os.remove(db)
+    print("总览/配额查询 PASS（代理分量不含本地流量）")
+
+
 if __name__ == "__main__":
     test_corrupt_db_selfheal()
     test_csv_injection()
     test_negative_and_huge()
+    test_total_and_proxy_queries()
     print("adv_history 全部通过")

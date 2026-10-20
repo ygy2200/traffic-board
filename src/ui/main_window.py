@@ -30,12 +30,18 @@ class PollWorker(QThread):
     """后台复合循环：250ms 双采样（全机网卡流量 + Clash 代理总量），每 4 轮一次面板刷新。"""
     board_ready = Signal(object)
     wave_ready = Signal(float, float, float, float, bool)  # 全机down/up B/s, 代理down/up B/s, clash在线
+    quota_alert = Signal(str, str)                          # (标题, 正文) 月流量上限告警（R7）
 
-    def __init__(self, agg: Aggregator, wave_ms: int = 250, board_ticks: int = 4) -> None:
+    def __init__(self, agg: Aggregator, wave_ms: int = 250, board_ticks: int = 4,
+                 quota_cap_gb: float = 0.0, quota_reset_day: int = 1) -> None:
         super().__init__()
         self._agg = agg
         self._wave_ms = wave_ms
         self._board_ticks = board_ticks
+        self._quota_cap_gb = float(quota_cap_gb or 0.0)
+        self._quota_reset_day = int(quota_reset_day or 1)
+        from core.quota import QuotaState
+        self._quota_state = QuotaState()
         self._running = True
         self._acc_down = 0.0     # 全机字节累计（60 秒落库）
         self._acc_up = 0.0
@@ -97,9 +103,34 @@ class PollWorker(QThread):
             # 每 60 秒历史落库
             if self._tick % 240 == 0:
                 self._flush_history()
+                self._check_quota()
             rest = self._wave_ms / 1000.0 - (time.time() - loop_t0)
             if rest > 0:
                 time.sleep(rest)
+
+    def set_quota(self, cap_gb: float, reset_day: int) -> None:
+        """设置页改月流量上限（下分钟落库时生效）。"""
+        self._quota_cap_gb = float(cap_gb or 0.0)
+        self._quota_reset_day = int(reset_day or 1)
+
+    def _check_quota(self) -> None:
+        """每分钟落库后检查套餐周期用量（R7：80% 预警 / 100% 超限，同周期同档不重复）。"""
+        if self._quota_cap_gb <= 0:
+            return
+        try:
+            from core.quota import month_window, next_alert
+            now = time.time()
+            start, _ = month_window(now, self._quota_reset_day)
+            up, down = self._agg.history.query_proxy_total_since(int(start))
+            alert = next_alert(self._quota_state, up + down,
+                               int(self._quota_cap_gb * (1024 ** 3)),
+                               now, self._quota_reset_day)
+            if alert:
+                level, msg = alert
+                self.quota_alert.emit(
+                    "流量接近套餐上限" if level == 1 else "流量已超套餐上限", msg)
+        except Exception:
+            pass
 
     def _flush_history(self) -> None:
         try:
@@ -283,9 +314,15 @@ class MainWindow(FluentWindow):
         self.exit_on_close = self._settings.value("close/exit", "0") in ("1", "true", True)
         self.badge_enabled = self._settings.value("badge/enabled", "1") in ("1", "true", True)
         self.badge_topmost = self._settings.value("badge/topmost", "1") in ("1", "true", True)
-        self.worker = PollWorker(agg)
+        # 月流量上限（R7：0=不限；reset_day=计费重置日）
+        self.quota_cap_gb = float(self._settings.value("quota/cap_gb", 0.0) or 0.0)
+        self.quota_reset_day = int(self._settings.value("quota/reset_day", 1) or 1)
+        self.worker = PollWorker(agg, quota_cap_gb=self.quota_cap_gb,
+                                 quota_reset_day=self.quota_reset_day)
         self.worker.board_ready.connect(self._on_board, Qt.ConnectionType.QueuedConnection)
         self.worker.wave_ready.connect(self._on_wave, Qt.ConnectionType.QueuedConnection)
+        self.worker.quota_alert.connect(self._on_quota_alert,
+                                        Qt.ConnectionType.QueuedConnection)
         self.worker.start()
 
         # ---- 托盘 + 悬浮速率条 ----
@@ -339,6 +376,18 @@ class MainWindow(FluentWindow):
 
     def set_exit_on_close(self, on: bool) -> None:
         self.exit_on_close = on
+
+    def set_quota(self, cap_gb: float, reset_day: int) -> None:
+        """设置页改月流量上限：持久化 + 转交后台线程。"""
+        self.quota_cap_gb = float(cap_gb or 0.0)
+        self.quota_reset_day = int(reset_day or 1)
+        self._settings.setValue("quota/cap_gb", self.quota_cap_gb)
+        self._settings.setValue("quota/reset_day", self.quota_reset_day)
+        self.worker.set_quota(self.quota_cap_gb, self.quota_reset_day)
+
+    def _on_quota_alert(self, title: str, msg: str) -> None:
+        from PySide6.QtWidgets import QSystemTrayIcon
+        self.tray.showMessage(title, msg, QSystemTrayIcon.MessageIcon.Warning, 6000)
 
     def _show_main(self) -> None:
         self.show()

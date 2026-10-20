@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""历史页：全机流量柱状图（24 小时/7 天）+ 软件代理流量回看排行。"""
+"""历史页：流量总览（今日/本周/本月）+ 全机流量柱状图（24 小时/7 天）+ 软件回看排行。"""
 from __future__ import annotations
 
 import time
@@ -101,6 +101,26 @@ class HistoryPage(QWidget):
         top.addWidget(self.btn_7d)
         v.addLayout(top)
 
+        # ---- 总览卡片：今日 / 本周 / 本月（R7，对标同类产品的日/月总量视图）----
+        self.summary_card = CardWidget(self)
+        sv = QHBoxLayout(self.summary_card)
+        sv.setContentsMargins(12, 10, 12, 10)
+        sv.setSpacing(8)
+        self._sum_labels: dict = {}
+        for key, title in (("today", "今日"), ("week", "本周"), ("month", "本月")):
+            tile = QVBoxLayout()
+            tile.setSpacing(1)
+            t = BodyLabel(title)
+            t.setStyleSheet("color: rgb(180,180,180);")
+            val = BodyLabel("—")
+            f = val.font(); f.setPointSizeF(13); f.setBold(True)
+            val.setFont(f)
+            tile.addWidget(t)
+            tile.addWidget(val)
+            sv.addLayout(tile)
+            self._sum_labels[key] = val
+        v.addWidget(self.summary_card)
+
         self.chart = BarChart(self)
         self.chart.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         card = CardWidget(self)
@@ -132,6 +152,7 @@ class HistoryPage(QWidget):
 
     def refresh(self) -> None:
         now = time.time()
+        self._refresh_summary(now)
         if self._range == "24h":
             since, bucket = now - 86400, 3600
             fmt_ts = lambda ts: time.strftime("%H:00", time.localtime(ts))
@@ -150,3 +171,14 @@ class HistoryPage(QWidget):
             self.rank_area.setText("\n".join(lines))
         else:
             self.rank_area.setText("积累中…（软件运行时每分钟记录一次；代理流量需要 Clash 在线）")
+
+    def _refresh_summary(self, now: float) -> None:
+        """今日（本地 0 点起）/ 本周（周一 0 点起）/ 本月（自然月 1 号起）。"""
+        lt = time.localtime(now)
+        day_start = now - (lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec)
+        week_start = day_start - lt.tm_wday * 86400          # tm_wday: Monday=0
+        month_start = time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+        for key, since in (("today", day_start), ("week", week_start),
+                           ("month", month_start)):
+            up, down = self.store.query_total_since(int(since))
+            self._sum_labels[key].setText(f"↓{_fmt(down)}  ↑{_fmt(up)}")

@@ -101,6 +101,35 @@ class HistoryStore:
         except sqlite3.DatabaseError:
             return []
 
+    def query_total_since(self, since_ts: int) -> tuple:
+        """返回 (up, down) 自 since_ts 起的全机字节总和（今日/本周/本月总览用）。"""
+        try:
+            with self._lock:
+                cur = self._conn.execute(
+                    "SELECT SUM(up), SUM(down) FROM totals_min WHERE ts >= ?",
+                    (int(since_ts),))
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return int(row[0] or 0), int(row[1] or 0)
+                return 0, 0
+        except sqlite3.DatabaseError:
+            return 0, 0
+
+    def query_proxy_total_since(self, since_ts: int) -> tuple:
+        """返回 (up, down) 自 since_ts 起的代理字节总和（套餐上限计量用——
+        计量经代理的流量，不含校园网内网本地流量，避免内网传输误报超限）。"""
+        try:
+            with self._lock:
+                cur = self._conn.execute(
+                    "SELECT SUM(up), SUM(down) FROM per_min WHERE ts >= ?",
+                    (int(since_ts),))
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return int(row[0] or 0), int(row[1] or 0)
+                return 0, 0
+        except sqlite3.DatabaseError:
+            return 0, 0
+
     def query_app_rank(self, since_ts: int, top: int = 10) -> list:
         try:
             with self._lock:
