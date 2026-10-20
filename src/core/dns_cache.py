@@ -27,9 +27,13 @@ _PS_SCRIPT = (
 
 
 class DnsCacheReader:
-    """后台线程持续产出 {ip: domain}。ip_map 属性随时可读（快照）。"""
+    """后台线程持续产出 {ip: domain}。ip_map 属性随时可读（快照）。
 
-    def __init__(self, interval_sec: float = 1.0) -> None:
+    轮询间隔 2s（R6 从 1s 降）：域名翻译是锦上添花，DNS 缓存本身变化慢，
+    1s 空转一半的 CPU；legacy 模式才启动（TUN 单源不消费，见 Aggregator.build）。
+    """
+
+    def __init__(self, interval_sec: float = 2.0) -> None:
         self.ip_map: Dict[str, str] = {}
         self._interval_ms = int(interval_sec * 1000)
         self._proc: Optional[subprocess.Popen] = None
@@ -43,6 +47,9 @@ class DnsCacheReader:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="dns-cache-reader")
         self._thread.start()
+
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
 
     def stop(self) -> None:
         self._stop.set()

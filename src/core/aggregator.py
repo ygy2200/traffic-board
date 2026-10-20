@@ -132,9 +132,10 @@ class Aggregator:
     def start(self) -> None:
         if not self._started:
             self._started = True
-            self.dns.start()
             self.clash.start()
             self.tun.start()
+            # dns 不在此启动：由 build() 按数据源模式管理（legacy 才需要），
+            # 且仅当本 Aggregator 真实启动过（测试 stub start() 时不启真进程）
 
     def stop(self) -> None:
         if self._started:
@@ -149,6 +150,16 @@ class Aggregator:
         clash = self.clash.snapshot()
         tun = self.tun.snapshot()
         use_tun = (clash.online and not self._force_legacy and tun == TunState.ON)
+        # DNS 缓存只在 legacy 模式被消费（TUN 单源的域名来自 Clash host 字段）。
+        # 跟随模式启停：TUN 下停掉常驻 PowerShell（省 ~60MB 内存 + 周期 wakeup，
+        # 也是历史遗留"强杀后 PowerShell 孤儿进程"的根治）；legacy 下幂等拉起。
+        # _started 守卫：测试 stub 掉 start() 时不碰真实子进程。
+        if self._started:
+            if use_tun:
+                if self.dns.is_running():
+                    self.dns.stop()
+            else:
+                self.dns.start()
         if use_tun:
             board = self._build_tun(clash)
             board.data_mode = "tun"

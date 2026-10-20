@@ -18,8 +18,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List
 from urllib.parse import quote
 
-import requests
-
 from .tun_detect import TunState, fakeip_probe
 
 SEV_OK, SEV_INFO, SEV_WARN, SEV_FAIL = "ok", "info", "warn", "fail"
@@ -144,7 +142,9 @@ def _port_listening(port: int, timeout: float = 0.6) -> bool:
 
 
 def _direct_session() -> "requests.Session":
-    """不走环境变量代理的会话（体检测的是网络层本身）。"""
+    """不走环境变量代理的会话（体检测的是网络层本身）。
+    requests 懒加载（R6）：导入 ~277ms，只服务体检线程。"""
+    import requests
     s = requests.Session()
     s.trust_env = False
     return s

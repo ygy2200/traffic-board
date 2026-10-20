@@ -26,8 +26,6 @@ import threading
 from enum import Enum
 from typing import List, Optional, Tuple
 
-import requests
-
 from .clash_api import ClashApiPoller
 
 _FAKEIP_NET = ipaddress.ip_network("198.18.0.0/15")   # mihomo fake-ip 默认段
@@ -123,7 +121,13 @@ class TunDetector:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._session = requests.Session()
+        self._session = None                  # 首次用时才建（requests 懒加载，R6）
+
+    def _ensure_session(self):
+        if self._session is None:
+            import requests
+            self._session = requests.Session()
+        return self._session
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -145,10 +149,11 @@ class TunDetector:
     def _api_tun(self, port: int) -> Tuple[bool, bool]:
         """(api_tun, api_ok)：GET /configs 的 tun.enable。任何异常 = (False, False)。"""
         try:
-            r = self._session.get(f"http://127.0.0.1:{port}/configs",
-                                  headers=({"Authorization": f"Bearer {self._secret}"}
-                                           if self._secret else {}),
-                                  timeout=2)
+            r = self._ensure_session().get(
+                f"http://127.0.0.1:{port}/configs",
+                headers=({"Authorization": f"Bearer {self._secret}"}
+                         if self._secret else {}),
+                timeout=2)
             data = r.json() if r.ok else None
             if isinstance(data, dict) and isinstance(data.get("tun"), dict):
                 return data["tun"].get("enable") is True, True

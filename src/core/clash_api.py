@@ -13,8 +13,6 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-import requests
-
 _CANDIDATE_PORTS = [9090, 9097, 9095, 9091, 19090]
 
 
@@ -91,8 +89,16 @@ class ClashApiPoller:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._session = requests.Session()
+        self._session = None                  # 首次用时才建（requests 懒加载，R6）
         self._last_port: Optional[int] = None   # 上次成功端口，重探测优先试它
+
+    def _ensure_session(self):
+        """后台线程首次轮询时才 import requests + 建 Session（~277ms 不进启动路径）。
+        良性竞态可接受：最坏多建一个 Session 对象，随即被 GC。"""
+        if self._session is None:
+            import requests
+            self._session = requests.Session()
+        return self._session
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -118,8 +124,9 @@ class ClashApiPoller:
             return False
         port = self.state.port or 9090
         try:
-            r = self._session.delete(f"http://127.0.0.1:{port}/connections/{conn_id}",
-                                     headers=self._headers(), timeout=3)
+            r = self._ensure_session().delete(
+                f"http://127.0.0.1:{port}/connections/{conn_id}",
+                headers=self._headers(), timeout=3)
             return 200 <= r.status_code < 300
         except Exception:
             return False
@@ -129,6 +136,7 @@ class ClashApiPoller:
         return {"Authorization": f"Bearer {self.secret}"} if self.secret else {}
 
     def _probe(self) -> Optional[int]:
+        session = self._ensure_session()
         # 上次成功的端口优先（重探测/重启线程时秒级命中，不必扫完整候选表）
         ports = ([self._last_port] if self._last_port else []) + \
                 [p for p in _CANDIDATE_PORTS if p != self._last_port]
@@ -136,8 +144,8 @@ class ClashApiPoller:
             if self._stop.is_set():   # 停止信号下立即放弃探测，保证线程快速退出
                 return None
             try:
-                r = self._session.get(f"http://127.0.0.1:{port}/version",
-                                      headers=self._headers(), timeout=1.2)
+                r = session.get(f"http://127.0.0.1:{port}/version",
+                                headers=self._headers(), timeout=1.2)
                 if r.ok:
                     self._version = r.json().get("version", "")
                     self._last_port = port
@@ -149,6 +157,7 @@ class ClashApiPoller:
     _version = ""
 
     def _run(self) -> None:
+        session = self._ensure_session()
         port = self._probe()
         fail = 0
         while not self._stop.is_set():
@@ -157,8 +166,8 @@ class ClashApiPoller:
                 port = self._probe()
                 continue
             try:
-                r = self._session.get(f"http://127.0.0.1:{port}/connections",
-                                      headers=self._headers(), timeout=1.5)
+                r = session.get(f"http://127.0.0.1:{port}/connections",
+                                headers=self._headers(), timeout=1.5)
                 r.raise_for_status()
                 state = parse_connections_payload(r.json(), getattr(self, "_version", ""))
                 state.port = port

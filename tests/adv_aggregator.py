@@ -313,6 +313,45 @@ def test_proc_rate_ema(monkey_agg: Aggregator):
     print("实时速率 EMA（差分/平滑/衰减）PASS")
 
 
+def test_dns_lifecycle_follows_mode(monkey_agg: Aggregator):
+    """R6：DNS 读取器跟随数据源模式启停（TUN 单源不消费 DNS → 停掉常驻
+    PowerShell 省内存；已停不得重复 stop；回 legacy 要能再拉起）。"""
+    calls = {"start": 0, "stop": 0}
+
+    class _FakeDns:
+        def start(self):
+            calls["start"] += 1
+        def stop(self):
+            calls["stop"] += 1
+        def is_running(self):
+            return calls["start"] > calls["stop"]
+        def snapshot(self):
+            return {}
+
+    monkey_agg.dns = _FakeDns()          # type: ignore
+    monkey_agg._started = True           # 模拟真实启动（守卫的本意）
+    monkey_agg.poller.poll = lambda: _fake_sys([("1.2.3.4", 443, "app.exe", "tcp")])
+    # legacy 模式：拉起
+    monkey_agg.tun.snapshot = lambda: TunState.OFF  # type: ignore
+    monkey_agg.clash.state = _fake_clash_state([])
+    monkey_agg.build()
+    assert calls["start"] == 1 and calls["stop"] == 0, calls
+    # TUN 模式：停一次
+    monkey_agg.tun.snapshot = lambda: TunState.ON  # type: ignore
+    monkey_agg.clash.state = _fake_clash_state([_tun_conn("c1", "app.exe", 1, 2)])
+    monkey_agg.build()
+    assert calls["stop"] == 1, calls
+    # 持续 TUN：不得重复 stop（is_running 守卫）
+    monkey_agg.build()
+    assert calls["stop"] == 1, f"重复 stop: {calls}"
+    # 回 legacy：重新拉起
+    monkey_agg.tun.snapshot = lambda: TunState.OFF  # type: ignore
+    monkey_agg.build()
+    assert calls["start"] == 2 and calls["stop"] == 1, calls
+    monkey_agg._started = False
+    print("DNS 读取器跟随数据源模式启停 PASS")
+
+
 if __name__ == "__main__":
     from core.tun_detect import TunState  # noqa: E402
     agg = Aggregator()
@@ -333,5 +372,6 @@ if __name__ == "__main__":
     test_force_legacy(agg)
     test_tun_key_unique(agg)
     test_proc_rate_ema(agg)
+    test_dns_lifecycle_follows_mode(agg)
     agg.stop()
     print("adv_aggregator 全部通过")
