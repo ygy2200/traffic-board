@@ -13,6 +13,7 @@ legacy 下系统表另按目标端口/网段判定。
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -50,6 +51,8 @@ class AppView:
     conns: List[ConnView] = field(default_factory=list)
     _upload_override: Optional[int] = None    # 进程级单调累计（见 Aggregator._update_proc_cum）
     _download_override: Optional[int] = None
+    rate_up: float = 0.0                      # 实时速率 B/s（EMA 平滑，R5 新增）
+    rate_down: float = 0.0
 
     @property
     def key(self) -> str:
@@ -96,6 +99,8 @@ class Board:
     sys_partial: bool = False
     data_mode: str = "legacy"   # 'tun'=TUN 单源 | 'legacy'=传统双源
     tun_state: str = "off"      # TunState.value（on/off/unknown）
+    session_up: int = 0         # 本次运行全机累计上行字节（PollWorker 填）
+    session_down: int = 0       # 本次运行全机累计下行字节
 
 
 class Aggregator:
@@ -117,6 +122,8 @@ class Aggregator:
         self._conn_last: Dict[str, tuple] = {}    # conn_id -> (up, down) 最后快照
         self._proc_cum: Dict[str, tuple] = {}     # proc_name(lower) -> (up, down) 累计
         self._cum_flushed: Dict[str, tuple] = {}  # 已写入历史的累计水位（差分用）
+        self._proc_rate: Dict[str, tuple] = {}    # proc_name(lower) -> (up_bps, down_bps) EMA
+        self._cum_last_t: float = 0.0             # 上次 _update_proc_cum 的单调时钟
 
     def set_force_legacy(self, force: bool) -> None:
         """设置页"强制传统模式"开关（排查用）；下一次 build 生效。"""
@@ -176,6 +183,9 @@ class Aggregator:
             cum = self._proc_cum.get(a.proc_name.lower())
             if cum and (cum[0] or cum[1]):
                 a.upload, a.download = cum
+            rate = self._proc_rate.get(a.proc_name.lower())
+            if rate:
+                a.rate_up, a.rate_down = rate
         board.apps = sorted(apps.values(),
                             key=lambda a: (-len(a.conns), a.display.lower()))
         return board
@@ -274,6 +284,9 @@ class Aggregator:
                 cum = self._proc_cum.get(a.proc_name.lower())
                 if cum and (cum[0] or cum[1]):
                     a.upload, a.download = cum
+                rate = self._proc_rate.get(a.proc_name.lower())
+                if rate:
+                    a.rate_up, a.rate_down = rate
 
         board.apps = sorted(merged.values(), key=lambda a: (-len(a.conns), a.display.lower()))
         return board
@@ -282,8 +295,16 @@ class Aggregator:
         """以 conn_id 差分累加每进程字节。断开连接最后一次增量已被计入，
         故累计单调递增。内核重启后连接 id 全新、从零差分，旧累计自然保留
         （uploadTotal/downloadTotal 是当前活跃连接总和，会随断开下降，
-        不能用作重启检测）。单连接字节倒退用 max(0,·) 吞掉防负增量。"""
+        不能用作重启检测）。单连接字节倒退用 max(0,·) 吞掉防负增量。
+
+        同时维护每进程实时速率（EMA 平滑）：本次差分 / 距上次 build 的
+        真实耗时。速率只反映"现在谁在跑量"，与累计值解耦（R5 排行新增
+        按速率排序的数据源）。"""
+        now = time.monotonic()
+        dt = now - self._cum_last_t if self._cum_last_t else 0.0
+        self._cum_last_t = now
         seen = set()
+        raw: Dict[str, tuple] = {}               # 本次 tick 每进程原始增量
         for cc in clash.conns:
             seen.add(cc.conn_id)
             lu, ld = self._conn_last.get(cc.conn_id, (0, 0))
@@ -292,9 +313,26 @@ class Aggregator:
                 key = (cc.process or "未知进程").lower()
                 cu, cd = self._proc_cum.get(key, (0, 0))
                 self._proc_cum[key] = (cu + du, cd + dd)
+                ru, rd = raw.get(key, (0, 0))
+                raw[key] = (ru + du, rd + dd)
             self._conn_last[cc.conn_id] = (cc.upload, cc.download)
         for gone in [cid for cid in self._conn_last if cid not in seen]:
             del self._conn_last[gone]
+        # 速率 EMA：首见直接给瞬时值（无预热偏差）；之后 0.6 旧 + 0.4 新；
+        # 无增量的进程向 0 衰减（停了的软件速率归零，不会赖在榜上）。
+        # 无可用时间基（首拍/时钟异常）时完全不更新——宁可没有速率也不造假。
+        usable_dt = dt if 0.05 < dt < 10.0 else 0.0
+        if not usable_dt:
+            return
+        for key in set(raw) | set(self._proc_rate):
+            prev = self._proc_rate.get(key)
+            nu, nd = raw.get(key, (0, 0))
+            inst_u, inst_d = nu / usable_dt, nd / usable_dt
+            if prev is None:
+                self._proc_rate[key] = (inst_u, inst_d)
+            else:
+                self._proc_rate[key] = (prev[0] * 0.6 + inst_u * 0.4,
+                                        prev[1] * 0.6 + inst_d * 0.4)
 
     def proc_cum_deltas(self) -> Dict[str, tuple]:
         """自上次调用以来每进程累计字节增量（历史落库专用）。

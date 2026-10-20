@@ -22,10 +22,21 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f}GB"
 
 
+def _fmt_rate(v: float) -> str:
+    """B/s → '1.2MB/s'（速率榜行内显示用）。"""
+    v = float(v or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if v < 1024 or unit == "GB":
+            return f"{v:.0f}{unit}/s" if unit == "B" else f"{v:.1f}{unit}/s"
+        v /= 1024.0
+    return f"{v:.1f}GB/s"
+
+
 class RankRow(QWidget):
     clicked_key = Signal(str)
 
-    def __init__(self, app, share: float, metric: str, selected: bool, parent=None) -> None:
+    def __init__(self, app, share: float, metric: str, selected: bool,
+                 value: str = "", parent=None) -> None:
         super().__init__(parent)
         self._app = app
         self._share = max(0.03, share)
@@ -52,10 +63,7 @@ class RankRow(QWidget):
         left.addWidget(self.lbl_metric)
         layout.addLayout(left, 1)
 
-        a = app
-        val = (f"↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
-               if (a.download or a.upload) else f"{len(a.conns)} 条")
-        self.lbl_value = QLabel(val)
+        self.lbl_value = QLabel(value)
         f3 = QFont(); f3.setPointSizeF(10); f3.setBold(True)
         self.lbl_value.setFont(f3)
         self.lbl_value.setStyleSheet("color: rgb(255,255,255); background: transparent;")
@@ -69,7 +77,8 @@ class RankRow(QWidget):
     def key(self) -> str:
         return self._app.key
 
-    def update_data(self, app, share: float, metric: str, selected: bool) -> None:
+    def update_data(self, app, share: float, metric: str, selected: bool,
+                    value: str = "") -> None:
         """秒级增量更新：只改真正变化的字段。"""
         self._app = app
         if self._share != share:
@@ -82,11 +91,8 @@ class RankRow(QWidget):
             self.lbl_name.setText(app.display)
         if self.lbl_metric.text() != metric:
             self.lbl_metric.setText(metric)
-        a = app
-        val = (f"↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
-               if (a.download or a.upload) else f"{len(a.conns)} 条")
-        if self.lbl_value.text() != val:
-            self.lbl_value.setText(val)
+        if self.lbl_value.text() != value:
+            self.lbl_value.setText(value)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
@@ -145,13 +151,26 @@ class RankList(QWidget):
                     return True
         return super().eventFilter(obj, event)
 
-    def render(self, apps, metric_mode: str, selected_key, keyword: str) -> None:
+    def render(self, apps, metric_mode: str, selected_key, keyword: str,
+               sort_mode: str = "cum") -> None:
+        """渲染排行。sort_mode: 'cum'=按累计流量（默认）| 'rate'=按当前速率。
+
+        两种模式的列语义互补（R5 新增，对标同类产品的"谁在跑量"视图）：
+        - cum：数值=本次运行累计字节，副行=代理/直连连接数
+        - rate：数值=当前速率（EMA 平滑），副行=累计字节 + 连接数
+        """
         kw = keyword.strip().lower()
         apps = [a for a in apps if not kw or kw in a.display.lower() or kw in a.proc_name.lower()
                 or any(kw in c.target.lower() for c in a.conns)]
-        if metric_mode == "bytes":
+        # 速率榜仅在 Clash 在线（有字节数据源）时生效；离线时速率全 0，
+        # 强行按速率排只会得到乱序，回落连接数排序
+        rate_mode = sort_mode == "rate" and metric_mode == "bytes"
+        if metric_mode == "bytes" and not rate_mode:
             apps = sorted(apps, key=lambda a: -(a.download + a.upload))
             shares = self._shares(apps, key=lambda a: a.download + a.upload)
+        elif rate_mode:
+            apps = sorted(apps, key=lambda a: -(a.rate_down + a.rate_up))
+            shares = self._shares(apps, key=lambda a: a.rate_down + a.rate_up)
         else:
             apps = sorted(apps, key=lambda a: -len(a.conns))
             shares = self._shares(apps, key=lambda a: len(a.conns))
@@ -167,15 +186,29 @@ class RankList(QWidget):
         # ---- 复用/创建 + 增量更新 ----
         target_widgets = []
         for a in apps:
-            metric = f"代理 {a.proxy_count} · 直连 {a.direct_count}" if a.proxy_count \
-                else f"连接 {len(a.conns)}"
+            if rate_mode:
+                metric = (f"累计 ↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
+                          f" · 代理 {a.proxy_count} · 直连 {a.direct_count}")
+                if a.rate_down or a.rate_up:
+                    value = f"↓{_fmt_rate(a.rate_down)} ↑{_fmt_rate(a.rate_up)}"
+                elif a.download or a.upload:
+                    value = f"累计 ↓{_fmt_bytes(a.download)}"
+                else:
+                    value = f"{len(a.conns)} 条"
+            else:
+                metric = f"代理 {a.proxy_count} · 直连 {a.direct_count}" if a.proxy_count \
+                    else f"连接 {len(a.conns)}"
+                value = (f"↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
+                         if (a.download or a.upload) else f"{len(a.conns)} 条")
             row = self._rows_by_key.get(a.key)
             if row is None:
-                row = RankRow(a, shares.get(a.key, 0.03), metric, selected=(selected_key == a.key))
+                row = RankRow(a, shares.get(a.key, 0.03), metric, selected=(selected_key == a.key),
+                              value=value)
                 row.clicked_key.connect(self.row_clicked.emit)
                 self._rows_by_key[a.key] = row
             else:
-                row.update_data(a, shares.get(a.key, 0.03), metric, selected=(selected_key == a.key))
+                row.update_data(a, shares.get(a.key, 0.03), metric,
+                                selected=(selected_key == a.key), value=value)
             target_widgets.append(row)
 
         # ---- 顺序：仅在目标顺序与当前不同时重排（避免每秒布局抖动）----

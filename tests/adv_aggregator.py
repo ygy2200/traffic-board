@@ -85,6 +85,9 @@ def _reset_cum(agg: Aggregator) -> None:
     """各 rank_cum 用例独立：清空共享累计状态。"""
     agg._proc_cum.clear()
     agg._conn_last.clear()
+    agg._proc_rate.clear()
+    agg._cum_flushed.clear()
+    agg._cum_last_t = 0.0
 
 def _conn(cid, proc, up, down, host="cdn.example.com"):
     return ClashConn(conn_id=cid, process=proc, host=host, dest_ip="1.2.3.4",
@@ -279,6 +282,37 @@ def test_tun_key_unique(monkey_agg: Aggregator):
     print("TUN 行键唯一 PASS")
 
 
+def test_proc_rate_ema(monkey_agg: Aggregator):
+    """实时速率（R5）：秒级差分 / 真实耗时 + EMA 平滑；停流的软件速率归零。"""
+    import time
+    _reset_cum(monkey_agg)
+    monkey_agg.tun.snapshot = lambda: TunState.ON  # type: ignore
+    # 第 1 拍：无时间基（dt=0），速率必为 0（UI 显示"——"，不凭空造数）
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 100, 200)])
+    b1 = monkey_agg.build()
+    a1 = next(a for a in b1.apps if a.proc_name == "app.exe")
+    assert a1.rate_up == 0 and a1.rate_down == 0, "无时间基不得造速率"
+    # 第 2 拍（隔 0.3s）：新增 300/600 → 瞬时 ≈ (1000, 2000) B/s，首见给瞬时值
+    time.sleep(0.3)
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 400, 800)])
+    b2 = monkey_agg.build()
+    a2 = next(a for a in b2.apps if a.proc_name == "app.exe")
+    assert 600 < a2.rate_up < 1400, f"瞬时速率异常: {a2.rate_up:.0f}"
+    assert 1200 < a2.rate_down < 2800, f"瞬时速率异常: {a2.rate_down:.0f}"
+    # 第 3 拍：无新增 → EMA 向 0 衰减（停流的软件速率归零，不赖榜）
+    time.sleep(0.3)
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 400, 800)])
+    b3 = monkey_agg.build()
+    a3 = next(a for a in b3.apps if a.proc_name == "app.exe")
+    assert a3.rate_up < a2.rate_up and a3.rate_down < a2.rate_down, "停流未衰减"
+    # 第 4 拍：连接彻底消失 → 该行不在榜；累计值保持单调不回退
+    time.sleep(0.3)
+    monkey_agg.clash.state = _fake_clash_state([])
+    monkey_agg.build()
+    assert monkey_agg._proc_cum["app.exe"] == (400, 800)
+    print("实时速率 EMA（差分/平滑/衰减）PASS")
+
+
 if __name__ == "__main__":
     from core.tun_detect import TunState  # noqa: E402
     agg = Aggregator()
@@ -298,5 +332,6 @@ if __name__ == "__main__":
     test_mode_switch_cum_continuous(agg)
     test_force_legacy(agg)
     test_tun_key_unique(agg)
+    test_proc_rate_ema(agg)
     agg.stop()
     print("adv_aggregator 全部通过")

@@ -10,8 +10,8 @@ import psutil
 from PySide6.QtCore import QSettings, QThread, Qt, Signal, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QHeaderView, QTableWidgetItem, QVBoxLayout,
-    QWidget, QSplitter, QSizePolicy,
+    QApplication, QHBoxLayout, QHeaderView, QPushButton, QTableWidgetItem,
+    QVBoxLayout, QWidget, QSplitter, QSizePolicy,
 )
 
 from qfluentwidgets import (
@@ -40,6 +40,8 @@ class PollWorker(QThread):
         self._acc_down = 0.0     # 全机字节累计（60 秒落库）
         self._acc_up = 0.0
         self._acc_n = 0
+        self._sess_down = 0.0    # 本次运行全机累计（永不重置，状态栏展示）
+        self._sess_up = 0.0
         self._tick = 0
 
     def run(self) -> None:
@@ -66,6 +68,8 @@ class PollWorker(QThread):
                         up_bps = max(0.0, (up - last_nic[1]) / dt)
                         self._acc_down += down_bps * dt
                         self._acc_up += up_bps * dt
+                        self._sess_down += down_bps * dt
+                        self._sess_up += up_bps * dt
                         clash = self._agg.clash.snapshot()
                         pd = pu = 0.0
                         online = clash.online
@@ -84,7 +88,10 @@ class PollWorker(QThread):
             self._tick += 1
             if self._tick % self._board_ticks == 0:
                 try:
-                    self.board_ready.emit(self._agg.build())
+                    board = self._agg.build()
+                    board.session_up = int(self._sess_up)
+                    board.session_down = int(self._sess_down)
+                    self.board_ready.emit(board)
                 except Exception:
                     pass
             # 每 60 秒历史落库
@@ -148,6 +155,10 @@ class MainWindow(FluentWindow):
         self._selected_key = ""
         self._last_bytes = None
         self._metric_mode = "bytes"
+        self._rank_sort = "cum"                 # 排行依据：cum=累计 | rate=当前速率（R5）
+        if QSettings("TrafficBoard", "TrafficBoard").value(
+                "rank/sort", "cum") == "rate":
+            self._rank_sort = "rate"
         self._detail_key = None
         self._detail_vals = []
         self._detail_title_text = ""
@@ -189,8 +200,21 @@ class MainWindow(FluentWindow):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
         lv.setSpacing(4)
-        self.rank_title = SubtitleLabel("软件排行（按连接数）")
-        lv.addWidget(self.rank_title)
+        title_row = QHBoxLayout()
+        self.rank_title = SubtitleLabel("软件排行（代理流量 · 本次运行累计）")
+        title_row.addWidget(self.rank_title)
+        title_row.addStretch(1)
+        self.btn_sort = QPushButton("按速率", left)
+        self.btn_sort.setFlat(True)
+        self.btn_sort.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_sort.setToolTip("切换排行依据：累计流量 ↔ 当前速率")
+        self.btn_sort.setStyleSheet("color: rgb(150,150,150); border: none; padding: 2px 6px;")
+        self.btn_sort.clicked.connect(self._toggle_sort)
+        title_row.addWidget(self.btn_sort)
+        if self._rank_sort == "rate":   # 持久化恢复：按钮文案与标题同步
+            self.btn_sort.setText("按累计")
+            self.rank_title.setText("软件排行（当前速率 · 经代理）")
+        lv.addLayout(title_row)
         self.rank = RankList(left)
         lv.addWidget(self.rank, 1)
         left.setMinimumWidth(300)
@@ -422,17 +446,36 @@ class MainWindow(FluentWindow):
         if self.badge_enabled:
             self.badge.set_speed(_fmt_bytes(down_avg) + "/s", _fmt_bytes(up_avg) + "/s")
         self._metric_mode = "bytes" if online else "count"
-        self.rank_title.setText("软件排行（代理流量 · 本次运行累计）" if online else "软件排行（按连接数）")
+        self._update_rank_title(online)
 
     # ---- 数据流 ----
+    def _update_rank_title(self, online: bool) -> None:
+        """排行标题跟随「Clash 在线状态 × 排序依据」（R5：双模式语义要写在明处）。"""
+        if online and self._rank_sort == "rate":
+            self.rank_title.setText("软件排行（当前速率 · 经代理）")
+        elif online:
+            self.rank_title.setText("软件排行（代理流量 · 本次运行累计）")
+        else:
+            self.rank_title.setText("软件排行（按连接数）")
+
+    def _toggle_sort(self) -> None:
+        """排行依据切换：累计流量 ↔ 当前速率（R5：同类产品的核心视图）。"""
+        self._rank_sort = "rate" if self._rank_sort == "cum" else "cum"
+        self.btn_sort.setText("按累计" if self._rank_sort == "rate" else "按速率")
+        QSettings("TrafficBoard", "TrafficBoard").setValue("rank/sort", self._rank_sort)
+        self._update_rank_title(self.agg.clash.snapshot().online)
+        self._render()
+
     def _on_board(self, board: Board) -> None:
         self._board = board
         clash = self.agg.clash.snapshot()
+        mode_tag = "TUN 单源" if board.data_mode == "tun" else "传统双源"
+        sess = f"会话 ↓{_fmt_bytes(board.session_down)} ↑{_fmt_bytes(board.session_up)}"
         if clash.online:
-            self.status.setText(f"● Clash 已连接 v{clash.version}")
+            self.status.setText(f"● Clash 已连接 v{clash.version} · {mode_tag} · {sess}")
             self.status.setTextColor(QColor("#4caf50"), QColor("#4caf50"))
         else:
-            self.status.setText("● Clash 未连接")
+            self.status.setText(f"● Clash 未连接 · {mode_tag} · {sess}")
             self.status.setTextColor(QColor(150, 150, 150), QColor(120, 120, 120))
         self._check_unknown(board)
         self._render()
@@ -471,7 +514,8 @@ class MainWindow(FluentWindow):
 
     def _render(self) -> None:
         b = self._board
-        self.rank.render(b.apps, self._metric_mode, self._selected_key, self.search.text())
+        self.rank.render(b.apps, self._metric_mode, self._selected_key,
+                         self.search.text(), sort_mode=self._rank_sort)
         self._render_detail()
         self.page_health.set_mode(b.data_mode, b.tun_state)
 
