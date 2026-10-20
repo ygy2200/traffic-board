@@ -21,6 +21,7 @@ from qfluentwidgets import (
 
 from core.aggregator import Aggregator, Board, CHANNEL_LABEL
 from core.domains_cn import annotate
+from core.nics import physical_nics
 from ui.wavegraph import WaveGraph
 from ui.ranklist import RankList, _fmt_bytes
 
@@ -39,19 +40,25 @@ class PollWorker(QThread):
         self._acc_down = 0.0     # 全机字节累计（60 秒落库）
         self._acc_up = 0.0
         self._acc_n = 0
-        self._last_app_total: dict = {}   # 软件代理字节累计快照（差分用）
         self._tick = 0
 
     def run(self) -> None:
         last_nic = None
         last_nic_t = 0.0
         last_clash = None
+        monitor_nics = None
+        last_nic_refresh = 0.0
         while self._running:
             loop_t0 = time.time()
             try:
+                # 网卡集合定期刷新（跟随 TUN 开关/网卡插拔）；TUN 虚拟网卡必须排除，
+                # 否则流量在虚拟网卡+物理网卡双重计数，全机速率虚高约 2 倍（R3 修复）
+                if monitor_nics is None or time.time() - last_nic_refresh > 10:
+                    monitor_nics = physical_nics(psutil.net_if_stats())
+                    last_nic_refresh = time.time()
                 nics = psutil.net_io_counters(pernic=True)
-                dn = sum(v.bytes_recv for k, v in nics.items() if not k.lower().startswith("lo"))
-                up = sum(v.bytes_sent for k, v in nics.items() if not k.lower().startswith("lo"))
+                dn = sum(v.bytes_recv for k, v in nics.items() if k in monitor_nics)
+                up = sum(v.bytes_sent for k, v in nics.items() if k in monitor_nics)
                 if last_nic is not None:
                     dt = time.time() - last_nic_t
                     if dt >= 0.1:
@@ -90,18 +97,11 @@ class PollWorker(QThread):
     def _flush_history(self) -> None:
         try:
             self._agg.known.flush()
-            clash = self._agg.clash.snapshot()
+            # 历史按软件差分改用 Aggregator 的累计增量（与实时排行同源）：
+            # 旧实现按活跃连接快照求和做差，连接在两次落库间关闭会丢尾字节
             per_app: dict = {}
-            if clash.online:
-                cur: dict = {}
-                for c in clash.conns:
-                    proc = c.process or "未知进程"
-                    u, d = cur.get(proc, (0, 0))
-                    cur[proc] = (u + c.upload, d + c.download)
-                for proc, (u, d) in cur.items():
-                    lu, ld = self._last_app_total.get(proc, (0, 0))
-                    per_app[proc] = (max(0, u - lu), max(0, d - ld), 1)
-                self._last_app_total = cur
+            for proc, (du, dd) in self._agg.proc_cum_deltas().items():
+                per_app[proc] = (du, dd, 1)
             self._agg.history.write_tick(int(time.time()), per_app,
                                          int(self._acc_up), int(self._acc_down))
         except Exception:

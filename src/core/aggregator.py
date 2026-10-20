@@ -116,6 +116,7 @@ class Aggregator:
         # 进程级单调累计（修复排行数值随连接断开回退的问题）
         self._conn_last: Dict[str, tuple] = {}    # conn_id -> (up, down) 最后快照
         self._proc_cum: Dict[str, tuple] = {}     # proc_name(lower) -> (up, down) 累计
+        self._cum_flushed: Dict[str, tuple] = {}  # 已写入历史的累计水位（差分用）
 
     def set_force_legacy(self, force: bool) -> None:
         """设置页"强制传统模式"开关（排查用）；下一次 build 生效。"""
@@ -202,11 +203,14 @@ class Aggregator:
         # --- Clash 连接（在线时提供代理侧明细；DIRECT 的也会重复出现在系统表，去重见下） ---
         clash_used_targets: set = set()
         clash_used_procs: set = set()
+        pid_map: Dict[str, int] = {}     # proc_name(lower) -> pid，一次 build 建一次索引
+        for sc in sys_snap.conns:
+            pid_map.setdefault(sc.proc_name.lower(), sc.pid)
         if clash.online:
             self._update_proc_cum(clash)
             for cc in clash.conns:
                 proc_name = cc.process or "未知进程"
-                pid = self._pid_of(sys_snap, proc_name)
+                pid = self._pid_of(sys_snap, proc_name, pid_map)
                 node = self._node_of(cc.chains)
                 target = cc.host or (f"{cc.dest_ip}:{cc.dest_port}" if cc.dest_ip else "未知")
                 channel = _CHANNEL_PROXY if node else _CHANNEL_DIRECT
@@ -292,11 +296,31 @@ class Aggregator:
         for gone in [cid for cid in self._conn_last if cid not in seen]:
             del self._conn_last[gone]
 
-    def _pid_of(self, snap: Snapshot, proc_name: str) -> int:
-        for sc in snap.conns:
-            if sc.proc_name.lower() == proc_name.lower():
-                return sc.pid
-        return 0
+    def proc_cum_deltas(self) -> Dict[str, tuple]:
+        """自上次调用以来每进程累计字节增量（历史落库专用）。
+
+        与 _proc_cum 同源：连接断开瞬间的尾字节已被 _update_proc_cum
+        计入累计，分钟差分不会再丢关闭连接的尾部（R3 修复：旧实现按
+        活跃连接快照求和做差，连接在两次落库间关闭即少算）。
+        返回值：{proc_name(lower): (up_delta, down_delta)}，只含有增量的项。"""
+        deltas: Dict[str, tuple] = {}
+        for key, (u, d) in self._proc_cum.items():
+            lu, ld = self._cum_flushed.get(key, (0, 0))
+            du, dd = u - lu, d - ld
+            if du or dd:
+                deltas[key] = (max(0, du), max(0, dd))
+            self._cum_flushed[key] = (u, d)
+        return deltas
+
+    def _pid_of(self, snap: Snapshot, proc_name: str,
+                name_map: Optional[Dict[str, int]] = None) -> int:
+        """按进程名找 pid（展示用）。name_map 可传入预建索引避免
+        O(连接数×系统连接数) 线性扫（_build_legacy 每次 build 都会调）。"""
+        if name_map is None:
+            name_map = {}
+            for sc in snap.conns:
+                name_map.setdefault(sc.proc_name.lower(), sc.pid)
+        return name_map.get(proc_name.lower(), 0)
 
     @staticmethod
     def _node_of(chains: List[str]) -> str:
