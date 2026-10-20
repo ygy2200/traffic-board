@@ -91,6 +91,47 @@ def _reg_proxy_server() -> str:
         return ""
 
 
+def _reg_proxy_port() -> int:
+    """从注册表 ProxyServer 解析端口（'127.0.0.1:7890' / 'http=127.0.0.1:7890;https=…'）。
+    解析不到返回 0。"""
+    raw = _reg_proxy_server()
+    if not raw:
+        return 0
+    part = raw.split("=")[-1].strip()     # 取 'http=…' 的值段
+    tail = part.rsplit(":", 1)[-1].strip()
+    try:
+        p = int(tail)
+        return p if 0 < p <= 65535 else 0
+    except ValueError:
+        return 0
+
+
+def _api_mixed_port(agg, timeout: float = 2.0) -> int:
+    """从 mihomo /configs 读 mixed-port（回退 port/socks-port）。读不到返回 0。"""
+    st = agg.clash.snapshot()
+    if not st.online or not st.port:
+        return 0
+    try:
+        s = _direct_session()
+        r = s.get(f"http://127.0.0.1:{st.port}/configs", timeout=timeout)
+        data = r.json() if r.ok else None
+        if isinstance(data, dict):
+            for key in ("mixed-port", "port", "socks-port"):
+                v = data.get(key)
+                if isinstance(v, int) and 0 < v <= 65535:
+                    return v
+    except Exception:
+        pass
+    return 0
+
+
+def _resolve_proxy_port(agg) -> int:
+    """本机代理入口端口发现（R4 修复：旧代码写死 7890，用户 mixed-port
+    不同（如 7897）或 TUN-only 无 mixed-port 时必误报）。
+    优先级：系统代理注册表 > mihomo /configs > 常见端口 7890。"""
+    return _reg_proxy_port() or _api_mixed_port(agg) or 7890
+
+
 def _port_listening(port: int, timeout: float = 0.6) -> bool:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -133,17 +174,28 @@ def _proxy_egress_ok(port: int = 7890, timeout: float = 3.0) -> bool:
         return False
 
 
+def _direct_egress_ok(timeout: float = 3.0) -> bool:
+    """不走任何代理直测境外（TUN 模式下流量已被内核接管，再走 7890 反而误判）。"""
+    try:
+        r = _direct_session().get("https://www.google.com/generate_204", timeout=timeout)
+        return r.status_code == 204
+    except Exception:
+        return False
+
+
 def _check_overall(agg) -> HealthItem:
     """总状态（用户视角第一问：我的代理生效了吗？）。
 
     系统代理开 + 节点出站失败 = "代理已开启但境外不可达"（fail，引导换节点）；
     这与"没开代理"是两回事，2026-10-04 用户反馈"我开代理他说我没开"的根因
-    就是旧版体检没有这一项，黑话淹没结论。"""
+    就是旧版体检没有这一项，黑话淹没结论。
+
+    R4 修复：端口不再写死 7890（按注册表/API 发现）；TUN 模式下直测出站，
+    不再经 7890（TUN-only 用户没有 7890 监听，旧代码必报假 FAIL）。"""
     tun_on = agg.tun.snapshot() == TunState.ON
     proxy_on = _reg_proxy_enabled()
     if tun_on:
-        egress = _proxy_egress_ok()
-        if egress:
+        if _direct_egress_ok():
             return HealthItem("overall", "代理总状态", SEV_OK,
                               "TUN 模式生效中，境外可达 ✓")
         return HealthItem("overall", "代理总状态", SEV_FAIL,
@@ -151,19 +203,20 @@ def _check_overall(agg) -> HealthItem:
                           "（看下方「节点可用性」选一个能用的）",
                           fix="在 FlClash 里切换到体检列出的可用节点")
     if proxy_on:
-        listening = _port_listening(7890)
+        port = _resolve_proxy_port(agg)
+        listening = _port_listening(port)
         if not listening:
             return HealthItem("overall", "代理总状态", SEV_FAIL,
-                              "系统代理开着但 7890 端口无人监听——代理软件可能刚退出",
-                              evidence="ProxyEnable=1；127.0.0.1:7890 连接失败",
+                              f"系统代理开着但 {port} 端口无人监听——代理软件可能刚退出",
+                              evidence=f"ProxyEnable=1；127.0.0.1:{port} 连接失败",
                               fix="重新打开 FlClash（或关闭系统代理开关恢复直连）")
-        if _proxy_egress_ok():
+        if _proxy_egress_ok(port):
             return HealthItem("overall", "代理总状态", SEV_OK,
-                              "系统代理模式生效中，境外可达 ✓")
+                              f"系统代理模式生效中（{port}），境外可达 ✓")
         return HealthItem("overall", "代理总状态", SEV_FAIL,
-                          "代理已开启，但境外出站不通——多半是当前节点问题（国内直连正常）"
-                          "（看下方「节点可用性」选一个能用的）",
-                          evidence="走 127.0.0.1:7890 访问 google 超时；"
+                          f"代理已开启（{port}），但境外出站不通——多半是当前节点问题"
+                          "（国内直连正常）（看下方「节点可用性」选一个能用的）",
+                          evidence=f"走 127.0.0.1:{port} 访问 google 超时；"
                                    "这不是「没开代理」，是节点不可用",
                           fix="在 FlClash 里切换到体检列出的可用节点")
     return HealthItem("overall", "代理总状态", SEV_INFO,
@@ -197,7 +250,8 @@ def _check_nodes(agg) -> HealthItem:
     port = st.port or 9090
     base = f"http://127.0.0.1:{port}"
     try:
-        r = requests.get(f"{base}/proxies", timeout=2.5)
+        s = _direct_session()   # R4：禁环境代理变量，防 http_proxy 瘫痪本机 API 调用
+        r = s.get(f"{base}/proxies", timeout=2.5)
         proxies = (r.json() or {}).get("proxies") or {}
     except Exception:
         return HealthItem("nodes", "节点可用性", SEV_WARN,
@@ -216,7 +270,7 @@ def _check_nodes(agg) -> HealthItem:
         try:
             u = (f"{base}/proxies/{quote(name, safe='')}/delay"
                  f"?timeout=2500&url={quote('https://www.google.com/generate_204', safe='')}")
-            rr = requests.get(u, timeout=4)
+            rr = _direct_session().get(u, timeout=4)
             return name, int((rr.json() or {}).get("delay") or 0)
         except Exception:
             return name, 0
@@ -355,30 +409,59 @@ def _check_egress(agg) -> HealthItem:
 
 
 def _check_proxy_port(agg) -> HealthItem:
-    """7890 端口与 mihomo 内核活性（测国内站点——境外可达性归总状态项）。"""
-    if not _port_listening(7890):
+    """代理入口端口与 mihomo 内核活性（端口按注册表/API 发现，不再写死 7890；
+    测国内站点——境外可达性归总状态项）。"""
+    port = _resolve_proxy_port(agg)
+    if not _port_listening(port):
         proxy_on = _reg_proxy_enabled()
-        if proxy_on:
-            return HealthItem("pport", "代理端口 7890", SEV_FAIL,
-                              "系统代理指向 7890 但端口无人监听——浏览器会全部断网",
+        tun_on = agg.tun.snapshot() == TunState.ON
+        if proxy_on and not tun_on:
+            return HealthItem("pport", f"代理端口 {port}", SEV_FAIL,
+                              f"系统代理指向 {port} 但端口无人监听——浏览器会全部断网",
                               fix="重新打开 FlClash，或关闭系统代理开关")
-        return HealthItem("pport", "代理端口 7890", SEV_INFO,
-                          "未监听（TUN 模式或未开代理时属正常）")
+        return HealthItem("pport", f"代理端口 {port}", SEV_INFO,
+                          f"{port} 未监听（TUN 模式或未开代理时属正常）")
     try:
         t0 = time.time()
         s = _direct_session()
         r = s.get("https://www.baidu.com", timeout=3,
-                  proxies={"http": "http://127.0.0.1:7890",
-                           "https": "http://127.0.0.1:7890"})
+                  proxies={"http": f"http://127.0.0.1:{port}",
+                           "https": f"http://127.0.0.1:{port}"})
         if r.status_code == 200:
-            return HealthItem("pport", "代理端口 7890", SEV_OK,
+            return HealthItem("pport", f"代理端口 {port}", SEV_OK,
                               f"mihomo 内核工作正常（{time.time()-t0:.1f}s 国内应答）")
-        return HealthItem("pport", "代理端口 7890", SEV_WARN,
-                          f"7890 可连但内核应答异常（HTTP {r.status_code}）")
+        return HealthItem("pport", f"代理端口 {port}", SEV_WARN,
+                          f"{port} 可连但内核应答异常（HTTP {r.status_code}）")
     except Exception as e:
-        return HealthItem("pport", "代理端口 7890", SEV_WARN,
-                          "7890 可连但内核无应答",
+        return HealthItem("pport", f"代理端口 {port}", SEV_WARN,
+                          f"{port} 可连但内核无应答",
                           evidence=f"{e.__class__.__name__}"[:80])
+
+
+def _check_proc_attr(agg) -> HealthItem:
+    """进程归因健康（R4 新增，研究实锤风险）：
+    mihomo 的 find-process-mode=off 时 /connections 不返回 process 字段，
+    TUN 单源模式下整个看板会变成「未知进程」且旧版无任何提示。
+    三站调研一致指出该配置决定 TUN 下归因有无（clashopen/clashsurge/
+    clashknow，2026-10）。行为检测：TUN 生效 + 有连接 + 全部无进程名。"""
+    tun_on = agg.tun.snapshot() == TunState.ON
+    st = agg.clash.snapshot()
+    if not (tun_on and st.online):
+        return HealthItem("procattr", "进程归因", SEV_INFO,
+                          "当前非 TUN 单源模式，进程名来自系统连接表，不受该配置影响")
+    if not st.conns:
+        return HealthItem("procattr", "进程归因", SEV_INFO,
+                          "当前无活动连接，无法采样进程名（有流量后再看）")
+    named = sum(1 for c in st.conns if c.process)
+    if named:
+        return HealthItem("procattr", "进程归因", SEV_OK,
+                          f"{named}/{len(st.conns)} 条连接带进程名，软件排行归因正常")
+    return HealthItem("procattr", "进程归因", SEV_FAIL,
+                      "内核未返回任何进程名——软件排行会全部显示「未知进程」",
+                      evidence="TUN 生效且连接存在，但 process 字段全为空。"
+                               "mihomo 的 find-process-mode=off 会关闭 TUN 进程匹配",
+                      fix="在 FlClash 配置文件中设置 find-process-mode: strict"
+                          "（或 always），保存后重启内核")
 
 
 def _check_dns_baseline(agg) -> HealthItem:
@@ -462,6 +545,7 @@ _CHECKS: Dict[str, Callable] = {
     "dnsbl": _check_dns_baseline,
     "vnic": _check_vnic_conflict,
     "route": _check_routes,
+    "procattr": _check_proc_attr,
 }
 
 
@@ -508,8 +592,9 @@ _CHECKS_META = {
     "tun": {"name": "TUN 模式"},
     "mutex": {"name": "TUN×系统代理互斥"}, "uwp": {"name": "UWP loopback 豁免"},
     "fakeip": {"name": "DNS 劫持（fake-ip）"}, "egress": {"name": "直连出境（诊断）"},
-    "pport": {"name": "代理端口 7890"}, "dnsbl": {"name": "系统 DNS 解析"},
+    "pport": {"name": "代理端口"}, "dnsbl": {"name": "系统 DNS 解析"},
     "vnic": {"name": "加速器共存"}, "route": {"name": "默认路由"},
+    "procattr": {"name": "进程归因"},
 }
 
 

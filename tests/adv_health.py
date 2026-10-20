@@ -22,8 +22,12 @@ from core.tun_detect import TunState  # noqa: E402
 class _FakeClash:
     """clash.snapshot() → 带online/port/version/conns 的状态对象。"""
     def __init__(self, online=False, port=0, version="1.10.0", conns=0):
+        if not isinstance(conns, int):
+            conn_list = list(conns)
+        else:
+            conn_list = list(range(conns))
         self._s = SimpleNamespace(online=online, port=port, version=version,
-                                  conns=list(range(conns)))
+                                  conns=conn_list)
     def snapshot(self):
         return self._s
 
@@ -153,26 +157,29 @@ def test_real_engine_smoke():
 
 
 def test_overall_matrix():
-    """总状态矩阵：回答"我的代理生效了吗"（2026-10-04 用户反馈的核心修复）。"""
-    old = (health._reg_proxy_enabled, health._port_listening, health._proxy_egress_ok)
+    """总状态矩阵：回答"我的代理生效了吗"（2026-10-04 用户反馈的核心修复）。
+    R4 起 TUN 分支改为直测出站（不经 7890），故 _direct_egress_ok 也进 mock。"""
+    old = (health._reg_proxy_enabled, health._port_listening, health._proxy_egress_ok,
+           health._direct_egress_ok, health._resolve_proxy_port)
     try:
-        # TUN 生效
         health._port_listening = lambda p, t=0: True
-        health._proxy_egress_ok = lambda: True
+        health._proxy_egress_ok = lambda port=7890, timeout=3.0: True
+        health._direct_egress_ok = lambda timeout=3.0: True
+        health._resolve_proxy_port = lambda agg: 7890
         assert health._check_overall(_FakeAgg(tun=TunState.ON)).severity == SEV_OK
         # TUN 开但节点不通 → fail 引导换节点
-        health._proxy_egress_ok = lambda: False
+        health._direct_egress_ok = lambda timeout=3.0: False
         assert health._check_overall(_FakeAgg(tun=TunState.ON)).severity == SEV_FAIL
         # 系统代理开 + 节点通 → ok
         health._reg_proxy_enabled = lambda: True
-        health._proxy_egress_ok = lambda: True
+        health._proxy_egress_ok = lambda port=7890, timeout=3.0: True
         it = health._check_overall(_FakeAgg(tun=TunState.OFF))
         assert it.severity == SEV_OK and "系统代理" in it.detail
         # 系统代理开 + 节点不通 → fail "换节点"（用户 10-04 场景的正确答案）
-        health._proxy_egress_ok = lambda: False
+        health._proxy_egress_ok = lambda port=7890, timeout=3.0: False
         it = health._check_overall(_FakeAgg(tun=TunState.OFF))
         assert it.severity == SEV_FAIL and "节点" in (it.fix or "")
-        # 系统代理开但 7890 无人监听 → fail
+        # 系统代理开但入口端口无人监听 → fail
         health._port_listening = lambda p, t=0: False
         it = health._check_overall(_FakeAgg(tun=TunState.OFF))
         assert it.severity == SEV_FAIL
@@ -182,13 +189,58 @@ def test_overall_matrix():
         assert it.severity == SEV_INFO
     finally:
         (health._reg_proxy_enabled,
-         health._port_listening, health._proxy_egress_ok) = old
+         health._port_listening, health._proxy_egress_ok,
+         health._direct_egress_ok, health._resolve_proxy_port) = old
     print("代理总状态矩阵 PASS（节点不通≠没开代理）")
+
+
+def test_proc_attr_matrix():
+    """进程归因矩阵（R4 新增）：TUN 下内核不返回进程名 → FAIL + 修复指引。"""
+    from core.clash_api import ClashConn
+    def _conn(proc):
+        return ClashConn(conn_id="c1", process=proc, host="a.com", dest_ip="",
+                         dest_port=443, network="tcp", chains=["香港01"])
+    # TUN + 在线 + 有进程名 → ok
+    it = health._check_proc_attr(_FakeAgg(tun=TunState.ON, online=True,
+                                          conns=[_conn("app.exe")]))
+    assert it.severity == SEV_OK, it
+    # TUN + 在线 + 全无进程名（find-process-mode: off）→ fail + 修复指引
+    it = health._check_proc_attr(_FakeAgg(tun=TunState.ON, online=True,
+                                          conns=[_conn(""), _conn("")]))
+    assert it.severity == SEV_FAIL and it.fix and "find-process-mode" in it.fix, it
+    # 非 TUN → info（进程名来自系统表，不受内核配置影响）
+    it = health._check_proc_attr(_FakeAgg(tun=TunState.OFF, online=True,
+                                          conns=[_conn("app.exe")]))
+    assert it.severity == SEV_INFO
+    # TUN 但无连接 → info（无法采样，不冤枉用户）
+    it = health._check_proc_attr(_FakeAgg(tun=TunState.ON, online=True, conns=[]))
+    assert it.severity == SEV_INFO
+    print("进程归因矩阵 PASS（find-process-mode 失效可发现）")
+
+
+def test_port_resolution():
+    """入口端口发现优先级：注册表 > mihomo /configs > 7890 兜底（R4 修复写死 7890）。"""
+    old = (health._reg_proxy_port, health._api_mixed_port)
+    try:
+        health._reg_proxy_port = lambda: 7897
+        health._api_mixed_port = lambda agg: 7890
+        assert health._resolve_proxy_port(_FakeAgg()) == 7897
+        health._reg_proxy_port = lambda: 0
+        assert health._resolve_proxy_port(_FakeAgg()) == 7890
+        health._api_mixed_port = lambda agg: 0
+        assert health._resolve_proxy_port(_FakeAgg()) == 7890
+    finally:
+        health._reg_proxy_port, health._api_mixed_port = old
+    # 注册表解析本身对各种写法免疫
+    assert health._reg_proxy_port.__name__ == "_reg_proxy_port"
+    print("端口发现优先级 PASS")
 
 
 if __name__ == "__main__":
     test_report_logic()
     test_overall_matrix()
+    test_proc_attr_matrix()
+    test_port_resolution()
     test_mutex_matrix()
     test_offline_full_run()
     test_registry_failure()
