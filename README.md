@@ -245,15 +245,24 @@ PY
 
 ```bash
 python scripts/release.py --tag v1.6.5 --title "Traffic Board v1.6.5" \
-    --notes tmp/release-notes-v1.6.5.md --zip TrafficBoard-v1.6.5-win64.zip
+    --notes docs/releases/v1.6.5.md --zip TrafficBoard-v1.6.5-win64.zip
 ```
 
+发布说明写在 `docs/releases/<版本>.md`（这一版起进版本库；之前只躺在 gitignore 的 `tmp/` 里，
+等于 GitHub 上那份公开文本本机没有留档，改了什么、发给用户的是什么，下次无从对照）。
+归档与线上有一处已知差异：v1.6.4 那份里一个折行示例带了本机家目录，归档时把用户名换成 `<用户名>`——
+不是保密（流水里本来就写着这类路径），是真实用户名对读者没有信息量。
 `scripts/release.py` 取代了以前每轮 sed 复制出来的一份 `publishXXX.py`，顺序是硬的：
 先扫发布说明里没填完的 `@XXX@` 占位符（**在拿 token 之前**拒，避免发半份说明）→
 `git credential fill` 取 token（只打印长度与后 4 位，从不打印明文）→ 建 Release
 （422「已存在」就复用那个 tag）→ 传附件 → 按本地 sha256 比对 digest（GitHub 惰性算摘要，重试 6 次）→
 **最后抓公开的 `/releases` 页面 HTML，里面必须能看见这个 tag**。
 前面几步全绿但公开列表看不见，对用户来说就是没发布。
+
+附件本身看不见这一点要单独说：Releases 页的附件列表是前端懒加载的，tag 页 HTML 里搜不到 zip 文件名
+（v1.6.5 发布时实测：标题、正文句子、SHA 都在，zip 名 0 命中）。所以脚本第 5 步验的是「这个版本可见」，
+不是「附件可下载」——后者要另外抓 `/releases/expanded_assets/<tag>` 片段或对下载直链发一次请求
+（v1.6.5 是手工验的：片段 HTTP 200 且列出 55.8 MB 那个 zip，直链匿名 302 跟随后 200）。
 
 ## 已知边界（如实说明）
 
