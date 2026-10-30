@@ -492,13 +492,24 @@ class MainWindow(FluentWindow):
             event.accept()
             _hard_exit(0)
 
+    def _detail_row_conn(self, pos):
+        """右键位置对应的那条连接；空态、越界、点在表头下一律 None。
+
+        空态必须返回 None：明细表空时第 0 行是一句提示，而 _current_detail_rows
+        可能还留着上一个进程的行 —— 按行号直取会让"断开此代理连接"
+        掐掉一条已经不显示给用户的活连接。
+        """
+        row = self.table.rowAt(int(pos.y()))
+        if 0 <= row < len(self._current_detail_rows):
+            return self._current_detail_rows[row]
+        return None
+
     def _detail_menu(self, pos) -> None:
         """明细表右键菜单：复制 / Wireshark 抓包 / 断开代理连接 / 导出 CSV。"""
         from PySide6.QtWidgets import QMenu, QApplication, QFileDialog
         from core.tools import find_wireshark
 
-        row = self.table.rowAt(int(pos.y()))
-        cv = self._current_detail_rows[row] if 0 <= row < len(self._current_detail_rows) else None
+        cv = self._detail_row_conn(pos)
         # 抓包目标：优先 IP，无 IP（Clash 只有域名的连接）用域名过滤
         ws_target = ""
         ws_port = cv.raddr_port if cv else 0
@@ -689,24 +700,53 @@ class MainWindow(FluentWindow):
         self._render_detail()
         self.page_health.set_mode(b.data_mode, b.tun_state)
 
+    def _detail_placeholder(self, title: str, tip: str) -> None:
+        """明细表空态：一行灰字说清"为什么是空的"。
+
+        顺手把 _current_detail_rows 清空——右键菜单按行号取连接，
+        留着上一个进程的行会让提示行也能"断开连接"。
+        """
+        self._current_detail_rows = []
+        self._detail_vals = []
+        key = ("placeholder", title, tip)
+        if key == self._detail_key:
+            return
+        self._detail_key = key
+        self.detail_title.setText(title)
+        self._detail_title_text = title
+        self.table.setRowCount(1)
+        item = QTableWidgetItem(tip)
+        item.setForeground(QColor(140, 140, 140))
+        self.table.setItem(0, 0, item)
+        for j in range(1, 4):
+            self.table.setItem(0, j, QTableWidgetItem(""))
+
     def _render_detail(self) -> None:
         """明细表增量更新：结构不变时只改文本（不再每秒新建 item）。"""
         b = self._board
         app = next((a for a in b.apps if a.key == self._selected_key), None)
         kw = self.search.text().strip().lower()
         if app is None:
-            if self._detail_key != ("none", ""):
-                self._detail_key = ("none", "")
-                self.detail_title.setText("连接明细")
-                self.table.setRowCount(1)
-                self.table.setItem(0, 0, QTableWidgetItem("点击左侧任一软件，查看它的连接明细"))
-                for j in range(1, 4):
-                    self.table.setItem(0, j, QTableWidgetItem(""))
+            if not self._selected_key:
+                self._detail_placeholder("连接明细", "点击左侧任一软件，查看它的连接明细")
+            else:
+                self._detail_placeholder(
+                    "连接明细",
+                    f"{self._selected_key} 已不在当前列表（进程结束或本次没采到它），"
+                    "点击左侧其他软件继续看")
             return
 
-        rows = [cv for cv in app.conns if not kw or kw in cv.target.lower()]
-        self._current_detail_rows = rows
         title = f"{app.display} 的连接（{len(app.conns)} 条）"
+        rows = [cv for cv in app.conns if not kw or kw in cv.target.lower()]
+        if not rows:
+            if kw:
+                tip = (f"没有匹配「{self.search.text().strip()}」的连接"
+                       f"（共 {len(app.conns)} 条，清空搜索框看全部）")
+            else:
+                tip = "该进程当前没有可见连接（连接已断开，或它的流量没走被采集的通道）"
+            self._detail_placeholder(title, tip)
+            return
+        self._current_detail_rows = rows
         key = (app.key, tuple((cv.target, cv.channel) for cv in rows))
         struct_changed = key != self._detail_key
         if self._detail_title_text != title:
