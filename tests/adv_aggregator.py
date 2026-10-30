@@ -174,6 +174,44 @@ def test_rank_cum_negative_delta(monkey_agg: Aggregator):
     print("单连接字节倒退防护 PASS")
 
 
+def test_legacy_pid_zero_no_cross_attribution(monkey_agg: Aggregator):
+    """R4：Clash 有连接但系统表查不到 pid 时（find-process-mode off / 进程刚起），
+    _pid_of 返回 0。0 不能当 apps 的键——否则所有无名进程并成一行，第一个到的
+    进程名给所有人戴帽，后到的软件整行消失（用户看到"discord 吃了 telegram 的量"）。"""
+    _reset_cum(monkey_agg)
+    monkey_agg.poller.poll = lambda: _fake_sys([("1.2.3.4", 443, "known.exe", "tcp")])
+    monkey_agg.clash.state = _fake_clash_state([
+        _conn("c1", "discord.exe", 100, 200, host="discord.com"),
+        _conn("c2", "telegram.exe", 7000, 8000, host="telegram.org"),
+        _conn("c3", "", 5, 6, host="unnamed.com"),               # mihomo 没给出进程名
+    ], up_total=7105, down_total=8206)
+    b = monkey_agg.build()
+    rows = {a.proc_name: a for a in b.apps}
+    assert {"discord.exe", "telegram.exe", "未知进程"} <= set(rows), \
+        f"无名进程被并成一行，软件整行消失: {sorted(rows)}"
+    assert (rows["discord.exe"].upload, rows["discord.exe"].download) == (100, 200)
+    assert (rows["telegram.exe"].upload, rows["telegram.exe"].download) == (7000, 8000)
+    assert [c.target for c in rows["discord.exe"].conns] == ["discord.com"], \
+        "跨进程串了连接明细"
+    assert [c.target for c in rows["telegram.exe"].conns] == ["telegram.org"]
+    assert rows["discord.exe"].pid == 0 and rows["telegram.exe"].pid == 0
+    print("无名进程不并行的按名归因（pid=0 串名防护）PASS")
+
+
+def test_legacy_pid_zero_merges_with_real_pid(monkey_agg: Aggregator):
+    """同软件既有 pid=0 的 Clash 行又有真实 pid 的系统行：合并成一行且 pid 取真实值。"""
+    _reset_cum(monkey_agg)
+    monkey_agg.poller.poll = lambda: _fake_sys([("8.8.8.8", 443, "app.exe", "tcp")])
+    monkey_agg.clash.state = _fake_clash_state([_conn("c1", "app.exe", 50, 60)])
+    b = monkey_agg.build()
+    rows = [a for a in b.apps if a.proc_name == "app.exe"]
+    assert len(rows) == 1, f"pid=0 行与真实 pid 行未合并: {len(rows)}"
+    assert rows[0].pid == 1, f"pid 仍是占位 0: {rows[0].pid}"
+    assert len(rows[0].conns) == 2
+    assert (rows[0].upload, rows[0].download) == (50, 60)
+    print("pid=0 行与真实 pid 行按名合并并回填 pid PASS")
+
+
 def test_local_semantics():
     f = ConnectionPoller.is_local
     assert f("127.0.0.1") and f("::1") and f("192.168.1.5") and f("10.0.0.1") and f("fe80::1")
@@ -363,6 +401,8 @@ if __name__ == "__main__":
     test_rank_cum_monotonic(agg)
     test_rank_cum_mihomo_restart(agg)
     test_rank_cum_multi_pid(agg)
+    test_legacy_pid_zero_no_cross_attribution(agg)
+    test_legacy_pid_zero_merges_with_real_pid(agg)
     test_rank_cum_negative_delta(agg)
     test_concurrent_build()
     test_local_semantics()

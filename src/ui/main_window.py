@@ -167,8 +167,16 @@ def _hard_exit(code: int = 0) -> None:
     句柄必须按 c_void_p 传：不带 argtypes 时 ctypes 把伪句柄 -1 截成 0xFFFFFFFF，
     TerminateProcess 只返回 ERROR_INVALID_HANDLE(6) 而不抛异常——原写法因此从未
     真正终止过进程，退出总是落到解释器拆除阶段崩（实测退出码 0xC0000005，8 次中 6 次）。
+
+    刷流必须在 TerminateProcess 之前：管道/重定向下 stdout 是块缓冲的，
+    硬杀会把最后一段输出连同缓冲区一起丢掉（曾让冒烟脚本"静默成功"无从判断）。
     """
     import ctypes
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
     try:
         kernel32 = ctypes.windll.kernel32
         kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
@@ -176,11 +184,6 @@ def _hard_exit(code: int = 0) -> None:
             return
     except Exception:
         pass
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.flush()
-        except Exception:
-            pass
     os._exit(code)
 
 

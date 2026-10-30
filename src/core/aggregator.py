@@ -214,12 +214,17 @@ class Aggregator:
             sys_partial=sys_snap.partial,
         )
 
-        apps: Dict[int, AppView] = {}
+        apps: Dict[int | str, AppView] = {}
 
         def app_of(pid: int, proc_name: str) -> AppView:
-            if pid not in apps:
-                apps[pid] = AppView(pid=pid, proc_name=proc_name, display=display_name(proc_name))
-            return apps[pid]
+            # pid=0 = Clash 有这条连接但系统表里找不到该进程的 pid（find-process-mode
+            # 关闭、进程刚起、权限不足）。0 不能当键：否则全部无名进程挤进同一个
+            # AppView，第一个到的进程名给所有人戴帽，后到的软件整行从排行里消失。
+            # 无名时按名分桶，同名合仍交给下面的 merged（它会回填真实 pid）。
+            k = pid if pid else "n:" + proc_name.lower()
+            if k not in apps:
+                apps[k] = AppView(pid=pid, proc_name=proc_name, display=display_name(proc_name))
+            return apps[k]
 
         # --- Clash 连接（在线时提供代理侧明细；DIRECT 的也会重复出现在系统表，去重见下） ---
         clash_used_targets: set = set()

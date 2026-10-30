@@ -51,16 +51,20 @@ def main() -> int:
     assert win.page_settings.sp_cap.value() == 0
     assert win.page_settings.sp_reset.value() == 1
 
-    # 退出路径：托盘退出 → closeEvent → worker.wait → agg.stop（无头下走完不挂）
-    win._quit_app()
-    app.processEvents()
-    print("五页导航 + 帮助页新章节 + 设置页限额卡 + 退出路径 PASS")
-    agg.stop()
-
+    # 恢复用户真设置必须在硬杀退出之前：_quit_app() 走 closeEvent → TerminateProcess，
+    # 它后面的任何语句都不会执行（此前这里的还原代码是死代码，每次跑都抹掉用户设置）。
     for k, v in had.items():
         qs.setValue(k, v)
     qs.sync()
-    return 0
+    assert set(qs.allKeys()) == set(had), f"设置未还原: {sorted(qs.allKeys())}"
+
+    print("五页导航 + 帮助页新章节 + 设置页限额卡 PASS")
+
+    # 退出路径：托盘退出 → closeEvent → worker.wait → agg.stop → TerminateProcess(0)
+    # 进程在此消失；rc=0 即退出路径通过（端到端覆盖另见 adv_process_exit.py）
+    win._quit_app()
+    agg.stop()
+    return 1   # 走到这里说明 _quit_app 没有终止进程 = 退出路径坏了
 
 
 if __name__ == "__main__":
