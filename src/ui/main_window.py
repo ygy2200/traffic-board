@@ -371,7 +371,8 @@ class MainWindow(FluentWindow):
         self.badge = SpeedBadge()
         self.badge.double_clicked.connect(self._show_main)
         self.badge.quit_requested.connect(self._quit_app)
-        self.badge.move(100, 100)
+        # 位置由 SpeedBadge 自己从 badge/pos 恢复（含屏幕合法性校验）：
+        # 这里不要再 move，否则用户拖好的悬浮条每次启动都被拽回同一个点。
         self.badge.set_topmost(self.badge_topmost)
         if not self.badge_enabled:
             self.badge.hide()
