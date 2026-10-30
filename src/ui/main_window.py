@@ -333,6 +333,7 @@ class MainWindow(FluentWindow):
         # 月流量上限（R7：0=不限；reset_day=计费重置日）
         self.quota_cap_gb = float(self._settings.value("quota/cap_gb", 0.0) or 0.0)
         self.quota_reset_day = int(self._settings.value("quota/reset_day", 1) or 1)
+        self._restore_win_geometry()          # 没有存值就保持上面的 resize(1000, 700)
         self.worker = PollWorker(agg, quota_cap_gb=self.quota_cap_gb,
                                  quota_reset_day=self.quota_reset_day)
         self.worker.board_ready.connect(self._on_board, Qt.ConnectionType.QueuedConnection)
@@ -415,7 +416,60 @@ class MainWindow(FluentWindow):
         self._tray_exit = True
         self.close()
 
+    def _save_win_geometry(self) -> None:
+        """窗口大小/位置落设置，下次启动回到用户放的地方。
+        位置存 frameGeometry（含边框，move() 认这个），尺寸存客户端宽高
+        （resize() 认这个）——两个空间混用会让窗口每次启动沿对角线漂一个边框宽。
+        sync() 必须调：退出走 TerminateProcess，QSettings 析构不会跑。"""
+        try:
+            s = self._settings
+            if self.isMaximized() or self.isMinimized():
+                # 此刻的 geometry 是"铺满屏幕"，存进去会污染下次启动的正常尺寸：
+                # 只更新标记，位置尺寸沿用上一次的正常值。
+                s.setValue("win/maximized", "1" if self.isMaximized() else "0")
+            else:
+                fg, g = self.frameGeometry(), self.geometry()
+                s.setValue("win/x", fg.x())
+                s.setValue("win/y", fg.y())
+                s.setValue("win/w", g.width())
+                s.setValue("win/h", g.height())
+                s.setValue("win/maximized", "0")
+            s.sync()
+        except Exception:
+            pass      # 存不进去只是丢一次体验，不能让关窗本身失败
+
+    def _restore_win_geometry(self) -> bool:
+        """返回是否真按存值恢复了（无存值/坏值 → False，保持默认尺寸）。"""
+        from PySide6.QtGui import QGuiApplication
+        s = self._settings
+        try:
+            x, y = int(s.value("win/x")), int(s.value("win/y"))
+            w, h = int(s.value("win/w")), int(s.value("win/h"))
+        except (TypeError, ValueError):
+            return False
+        if w < 200 or h < 200:          # 0/负数/半截数据：宁可回默认
+            return False
+        self.resize(w, h)
+        self.move(x, y)
+        # 显示器拔掉/分辨率变了：Qt 不一定兜得住，这里保证窗口回到某块屏幕内
+        fg = self.frameGeometry()
+        screens = QGuiApplication.screens()
+        if screens and not any(sg.geometry().intersects(fg) for sg in screens):
+            avail = (QGuiApplication.primaryScreen() or screens[0]).availableGeometry()
+            self.move(avail.center().x() - self.width() // 2,
+                      avail.center().y() - self.height() // 2)
+        if s.value("win/maximized", "0") in ("1", "true", True):
+            # 本窗口是 qframelesswindow 无边框窗，它的 showMaximized() 会去问 Win32
+            # GetWindowPlacement——句柄无效时直接抛 pywintypes.error(1400)（离屏实测）。
+            # 启动阶段绝不能因为它炸，最大化丢了只是体验，兜住。
+            try:
+                self.showMaximized()
+            except Exception:
+                pass
+        return True
+
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._save_win_geometry()
         # 关窗行为由设置决定：默认最小化到托盘；开启"直接退出"或托盘菜单退出时真退
         if not self._tray_exit and not self.exit_on_close:
             from PySide6.QtWidgets import QSystemTrayIcon

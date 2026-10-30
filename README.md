@@ -65,6 +65,7 @@ python tests/render_v162.py       # 离屏渲染验收（总览/配额设置）
 python tests/render_v16_health.py # 离屏渲染验收（体检页三态）
 python tests/render_v163_badge.py # 离屏渲染验收（悬浮条位置跨启动保留）
 python tests/render_v164_feedback.py # 离屏渲染验收（右键动作的成功/失败回执）
+python tests/render_v165_geometry.py # 离屏渲染验收（主窗口几何跨启动保留，含真重启读回）
 ```
 
 打包后没有控制台，所以"点了没反应"必须变成看得见的话：明细表右键的
