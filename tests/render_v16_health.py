@@ -16,6 +16,7 @@ from core.health import (  # noqa: E402
     SEV_FAIL, SEV_INFO, SEV_OK, SEV_WARN, HealthItem, HealthReport)
 from core.tun_detect import TunState  # noqa: E402
 from ui.health_page import HealthPage  # noqa: E402
+from _qt_harness import hard_exit  # noqa: E402
 
 HERE = Path(__file__).parent
 
@@ -107,4 +108,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    hard_exit(main())

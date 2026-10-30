@@ -160,15 +160,28 @@ def _channel(cv) -> str:
 
 
 def _hard_exit(code: int = 0) -> None:
-    """Windows 硬杀自进程。os._exit 在 Windows 走 CRT exit()，仍执行 DLL
-    detach 等运行时清理，会撞上采样线程残留的 Qt 线程存储导致段错误
-    （实测约 1/3 复现）；TerminateProcess 跳过一切清理，立即终止。"""
+    """Windows 硬杀自进程。os._exit 走 CRT exit()，仍执行 DLL detach 等运行时
+    清理，会撞上采样线程残留的 Qt 线程存储导致段错误；TerminateProcess 跳过一切
+    清理，立即终止。
+
+    句柄必须按 c_void_p 传：不带 argtypes 时 ctypes 把伪句柄 -1 截成 0xFFFFFFFF，
+    TerminateProcess 只返回 ERROR_INVALID_HANDLE(6) 而不抛异常——原写法因此从未
+    真正终止过进程，退出总是落到解释器拆除阶段崩（实测退出码 0xC0000005，8 次中 6 次）。
+    """
+    import ctypes
     try:
-        import ctypes
-        ctypes.windll.kernel32.TerminateProcess(
-            ctypes.windll.kernel32.GetCurrentProcess(), code)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        if kernel32.TerminateProcess(ctypes.c_void_p(-1), code & 0xFFFFFFFF):
+            return
     except Exception:
-        os._exit(code)
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    os._exit(code)
 
 
 class MainWindow(FluentWindow):

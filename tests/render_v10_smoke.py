@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from core.aggregator import Aggregator  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
+from _qt_harness import hard_exit  # noqa: E402
 
 
 def main() -> int:
@@ -58,8 +59,9 @@ def main() -> int:
 
     for k, v in had.items():
         qs.setValue(k, v)
+    qs.sync()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    hard_exit(main())

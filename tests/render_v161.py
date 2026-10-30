@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from core.aggregator import AppView, Board, ConnView  # noqa: E402
 from ui.ranklist import RankList  # noqa: E402
+from _qt_harness import hard_exit  # noqa: E402
 
 HERE = Path(__file__).parent
 
@@ -133,5 +134,6 @@ app.processEvents()
 _qs.remove("rank/sort")             # 清理测试写入（恢复用户默认）
 if _had_sort is not None:
     _qs.setValue("rank/sort", _had_sort)
+_qs.sync()
 print("render_v161 全部通过")
-sys.exit(0)
+hard_exit(0)

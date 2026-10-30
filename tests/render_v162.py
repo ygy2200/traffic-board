@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from core.history import HistoryStore  # noqa: E402
 from ui.history_page import HistoryPage  # noqa: E402
 from ui.settings_page import SettingsPage  # noqa: E402
+from _qt_harness import hard_exit  # noqa: E402
 
 HERE = Path(__file__).parent
 
@@ -103,9 +104,10 @@ def main() -> int:
         qs.setValue("quota/cap_gb", had[0])
     if had[1] is not None:
         qs.setValue("quota/reset_day", had[1])
+    qs.sync()
     print("render_v162 全部通过")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    hard_exit(main())
