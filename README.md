@@ -64,7 +64,14 @@ python tests/render_v161.py       # 离屏渲染验收（排行双模式）
 python tests/render_v162.py       # 离屏渲染验收（总览/配额设置）
 python tests/render_v16_health.py # 离屏渲染验收（体检页三态）
 python tests/render_v163_badge.py # 离屏渲染验收（悬浮条位置跨启动保留）
+python tests/render_v164_feedback.py # 离屏渲染验收（右键动作的成功/失败回执）
 ```
+
+打包后没有控制台，所以"点了没反应"必须变成看得见的话：明细表右键的
+导出 CSV / 起 Wireshark / 断开代理连接三条动作都走 `_toast()`——
+窗口在前台用 InfoBar（成功绿色、失败红色，含行数与路径），
+收进托盘时退回托盘气泡。导出失败会区分"文件被占用/无权限"和其他原因，
+且失败时绝不把你原来那份 CSV 清空。
 
 跑测试不用先关程序：`tests/_qt_harness.py` 把两个用户态入口都隔离掉了——
 数据目录走 `TB_DATA_DIR`（临时目录，测试不会往你的 30 天历史里写假数据），

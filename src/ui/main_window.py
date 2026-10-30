@@ -440,8 +440,7 @@ class MainWindow(FluentWindow):
     def _detail_menu(self, pos) -> None:
         """明细表右键菜单：复制 / Wireshark 抓包 / 断开代理连接 / 导出 CSV。"""
         from PySide6.QtWidgets import QMenu, QApplication, QFileDialog
-        from core.tools import find_wireshark, export_connections_csv
-        import subprocess as _sp
+        from core.tools import find_wireshark
 
         row = self.table.rowAt(int(pos.y()))
         cv = self._current_detail_rows[row] if 0 <= row < len(self._current_detail_rows) else None
@@ -476,25 +475,74 @@ class MainWindow(FluentWindow):
         if chosen is act_copy and cv is not None:
             QApplication.clipboard().setText(cv.target)
         elif chosen is act_ws and cv is not None:
-            if cv.raddr_ip:
-                filt = f"host {ws_target} and port {ws_port}" if ws_port else f"host {ws_target}"
+            if cv.raddr_ip and ws_port:
+                filt = f"host {ws_target} and port {ws_port}"
             else:
                 filt = f"host {ws_target}"
-            _sp.Popen([ws_path, "-f", filt])
+            self._launch_wireshark(ws_path, filt)
         elif chosen is act_kill and cv is not None:
-            self.agg.clash.close_connection(cv.conn_id)
+            self._close_conn(cv)
         elif chosen is act_csv:
             path, _ = QFileDialog.getSaveFileName(self, "导出连接列表",
-                                                  os.path.expanduser("~/Desktop/连接列表.csv"),
+                                                  os.path.join(os.path.expanduser("~"), "Desktop",
+                                                              "连接列表.csv"),
                                                   "CSV (*.csv)")
-            if not path:
-                return
-            all_rows = []
-            for a in self._board.apps:
-                for c in a.conns:
-                    all_rows.append((a.display, a.proc_name, c.target, CHANNEL_LABEL[c.channel],
-                                     c.node, _fmt_bytes(c.download), _fmt_bytes(c.upload)))
-            export_connections_csv(path, all_rows)
+            if path:
+                self._export_csv(path)
+
+    # ------------------------------------------------------------ 动作与回执
+    def _toast(self, kind: str, title: str, content: str) -> None:
+        """干完一件事必须说一声：前台用 InfoBar，窗口收进托盘时退回托盘气泡。
+        打包后 console=False，不吭声的失败和用户听到的「没反应」是同一件事。"""
+        if self.isVisible() and not self.isMinimized():
+            from qfluentwidgets import InfoBar, InfoBarPosition
+            show = {"success": InfoBar.success, "info": InfoBar.info,
+                    "warning": InfoBar.warning, "error": InfoBar.error}[kind]
+            # 全用关键字：qfluentwidgets 各版本 success() 的形参顺序不一样
+            # （本机这版是 title, content, orient, isClosable, duration, position, parent），
+            # 按位置传会把 InfoBarPosition 塞进 isClosable，直接 TypeError。
+            show(title, content, duration=5000, position=InfoBarPosition.TOP,
+                 parent=self, isClosable=True)
+            return
+        from PySide6.QtWidgets import QSystemTrayIcon
+        icon = {"success": QSystemTrayIcon.MessageIcon.Information,
+                "info": QSystemTrayIcon.MessageIcon.Information,
+                "warning": QSystemTrayIcon.MessageIcon.Warning,
+                "error": QSystemTrayIcon.MessageIcon.Critical}[kind]
+        self.tray.showMessage(title, content, icon, 6000)
+
+    def _csv_rows(self) -> list:
+        rows = []
+        for a in self._board.apps:
+            for c in a.conns:
+                rows.append((a.display, a.proc_name, c.target, CHANNEL_LABEL[c.channel],
+                             c.node, _fmt_bytes(c.download), _fmt_bytes(c.upload)))
+        return rows
+
+    def _export_csv(self, path: str) -> None:
+        from core.tools import export_connections_csv
+        try:
+            n = export_connections_csv(path, self._csv_rows())
+        except OSError as e:
+            why = ("目标文件正被占用或没有写入权限（同名文件在 Excel 里开着最常见）"
+                   if isinstance(e, PermissionError) else (e.strerror or str(e)))
+            self._toast("error", "导出失败", f"{os.path.basename(path)}：{why}")
+            return
+        self._toast("success", "已导出", f"{n} 条连接 → {path}")
+
+    def _close_conn(self, cv) -> None:
+        if self.agg.clash.close_connection(cv.conn_id):
+            self._toast("success", "已断开", f"{cv.target} 这条代理连接已关闭")
+        else:
+            self._toast("warning", "没能断开",
+                        f"{cv.target}：代理可能已离线，或这条连接已经结束")
+
+    def _launch_wireshark(self, exe: str, filt: str) -> None:
+        import subprocess as _sp
+        try:
+            _sp.Popen([exe, "-f", filt])
+        except OSError as e:
+            self._toast("error", "Wireshark 没起来", f"{os.path.basename(exe)}：{e.strerror or e}")
 
     def _on_wave(self, down_bps: float, up_bps: float, pd: float, pu: float, online: bool) -> None:
         """全机真实流量波形（直连+代理都含），代理量作数字标注。"""
