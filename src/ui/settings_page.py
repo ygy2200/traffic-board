@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QWidget
+from PySide6.QtCore import QSettings, QPoint
+from PySide6.QtWidgets import (
+    QAbstractScrollArea, QGridLayout, QHBoxLayout, QFrame, QVBoxLayout, QWidget,
+)
 
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, CardWidget, ScrollArea, SpinBox, SwitchButton,
@@ -18,6 +20,74 @@ from core.version import VERSION
 
 def _exe_path() -> str:
     return sys.executable if getattr(sys, "frozen", False) else ""
+
+
+class _FlowFields(QWidget):
+    """一排「标签 + 控件」：放得下就保持一行，放不下自动折成多行。
+
+    判断依据取滚动区视口宽度，而不是本控件自己的宽度——横向滚动条一旦冒出来，
+    布局会把这个控件撑到它自己要求的最小宽度，于是「放得下」永远成立，
+    滚动条再也收不掉。实测就是这么锁死的：窗口 456 宽时视口只有 407，
+    而「月流量上限」那张卡坚持要 550，横向多出 167px。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._g = QGridLayout(self)
+        self._g.setContentsMargins(0, 0, 0, 0)
+        self._g.setHorizontalSpacing(12)
+        self._g.setVerticalSpacing(8)
+        self._cells: list = []
+        self._stacked = False
+
+    def addField(self, labelText: str, widget: QWidget) -> None:
+        cell = QWidget(self)
+        label = BodyLabel(labelText, cell)
+        h = QHBoxLayout(cell)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+        h.addWidget(label)
+        h.addWidget(widget)
+        # 富余量给尾部弹簧：否则多出来的宽度会被标签吃掉，
+        # 折行时两行的输入框起点就错开了（实测 66 vs 136）
+        h.addStretch(1)
+        self._cells.append((cell, label, widget))
+        self._place(self._stacked)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._reflow()
+
+    def _need(self) -> int:
+        return (sum(c.minimumSizeHint().width() for c, _, _ in self._cells)
+                + self._g.horizontalSpacing() * max(len(self._cells) - 1, 0))
+
+    def _reflow(self) -> None:
+        sa = self.parentWidget()
+        while sa is not None and not isinstance(sa, QAbstractScrollArea):
+            sa = sa.parentWidget()
+        inner = sa.widget() if sa is not None else None
+        if sa is None or inner is None:
+            return                      # 不在滚动区里：没有「视口」可言，保持一行
+        left = self.mapTo(inner, QPoint(0, 0)).x()
+        avail = sa.viewport().width() - 2 * left
+        stacked = avail < self._need()
+        if stacked != self._stacked:
+            self._place(stacked)
+
+    def _place(self, stacked: bool) -> None:
+        self._stacked = stacked
+        # 折行时把标签占位对齐，否则两行的输入框会一前一后错开
+        lab_w = max((lab.sizeHint().width() for _, lab, _ in self._cells), default=0)
+        for i, (cell, label, _) in enumerate(self._cells):
+            label.setMinimumWidth(lab_w if stacked else 0)
+            if stacked:
+                self._g.addWidget(cell, i, 0)
+            else:
+                self._g.addWidget(cell, 0, i)
+        cols = 1 if stacked else len(self._cells)
+        for c in range(0, len(self._cells) + 2):
+            self._g.setColumnStretch(c, 1 if c == cols else 0)
 
 
 class SettingsPage(QWidget):
@@ -139,24 +209,20 @@ class SettingsPage(QWidget):
         note_q.setStyleSheet("color: rgb(160,160,160);")
         note_q.setWordWrap(True)
         cq.addWidget(note_q)
-        row_q = QHBoxLayout()
-        row_q.addWidget(BodyLabel("上限"))
+        row_q = _FlowFields(card_q)
         self.sp_cap = SpinBox(card_q)
         self.sp_cap.setRange(0, 100000)
         self.sp_cap.setSuffix(" GB")
         self.sp_cap.setValue(int(float(self._settings.value("quota/cap_gb", 0.0) or 0.0)))
         self.sp_cap.valueChanged.connect(self._on_quota)
-        row_q.addWidget(self.sp_cap)
-        row_q.addSpacing(20)
-        row_q.addWidget(BodyLabel("重置日"))
+        row_q.addField("上限", self.sp_cap)
         self.sp_reset = SpinBox(card_q)
         self.sp_reset.setRange(1, 28)
         self.sp_reset.setSuffix(" 号")
         self.sp_reset.setValue(int(self._settings.value("quota/reset_day", 1) or 1))
         self.sp_reset.valueChanged.connect(self._on_quota)
-        row_q.addWidget(self.sp_reset)
-        row_q.addStretch(1)
-        cq.addLayout(row_q)
+        row_q.addField("重置日", self.sp_reset)
+        cq.addWidget(row_q)
         iv.addWidget(card_q)
 
     # ---- 关于 ----

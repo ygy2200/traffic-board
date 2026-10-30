@@ -70,7 +70,21 @@ python tests/render_v166_alerts.py  # 离屏渲染验收（提醒开关跨重启
 python tests/render_v167_detail_empty.py # 离屏渲染验收（明细表三种空态 + 右键不误伤）
 python tests/render_v168_small_screen.py # 离屏渲染验收（1366x720 小屏：最小尺寸 + 省略号，喂数据测量）
 python tests/render_v169_infobar_fit.py # 离屏渲染验收（前台提醒条宽度不超窗口，含半屏贴靠）
+python tests/render_v170_settings_fit.py # 离屏渲染验收（设置页极限宽度无横向滚动条，配额行自动折行）
 ```
+
+`tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
+套件调用的辅助件，不是独立套件：`_instance_driver.py` 少了命令行参数就必然 IndexError 退 1，
+所以串行回归跑 `tests/adv_*.py tests/render_*.py`，别用 `tests/*.py`。
+Qt 套件之间也不要并发跑——它们靠父进程按注册表快照还原 QSettings，
+同时开两三个会互相把快照踩掉，表现为随机的 rc=127（实测踩过）。
+
+设置页的「月流量上限」一行里有两个数字输入框，横向最小需求 550px，
+比 456 宽窗口的视口（407）还大一截——以前必须横向拖滚动条才看得全「重置日」。
+现在这一行自己会折：宽窗口保持一行，窄窗口把「重置日」挪到第二行并与上一行的
+输入框左对齐。判断依据是滚动区视口宽度而不是这一行自己的宽度——
+按自己的宽度判断会死锁：横向滚动条一出现，布局就把这行撑到它要求的最小宽度，
+于是"放得下"永远成立，滚动条再也收不掉。
 
 打包后没有控制台，所以"点了没反应"必须变成看得见的话：明细表右键的
 导出 CSV / 起 Wireshark / 断开代理连接三条动作都走 `_toast()`——
