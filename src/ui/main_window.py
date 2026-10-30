@@ -8,14 +8,14 @@ import time
 
 import psutil
 from PySide6.QtCore import QSettings, QThread, Qt, Signal, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFontMetrics
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QPushButton, QTableWidgetItem,
     QVBoxLayout, QWidget, QSplitter, QSizePolicy,
 )
 
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, FluentWindow, FluentIcon, SearchLineEdit,
+    BodyLabel, CaptionLabel, FluentWindow, FluentIcon, InfoBar, SearchLineEdit,
     SubtitleLabel, TableWidget, Theme, setTheme,
 )
 
@@ -24,6 +24,47 @@ from core.domains_cn import annotate
 from core.nics import physical_nics
 from ui.wavegraph import WaveGraph
 from ui.ranklist import RankList, _fmt_bytes
+
+
+def _wrap_px(fm: QFontMetrics, text: str, px: int) -> str:
+    """按真实像素宽度折行（中文没有空格，只能一个字一个字试）。"""
+    lines = []
+    for para in text.split("\n"):
+        cur = ""
+        for ch in para:
+            if cur and fm.horizontalAdvance(cur + ch) > px:
+                lines.append(cur)
+                cur = ch
+            else:
+                cur += ch
+        lines.append(cur)
+    return "\n".join(lines)
+
+
+class _ToastBar(InfoBar):
+    """宽度永远不超过父窗口的前台提醒条。
+
+    qfluentwidgets 的 _adjustText 按「9px 一个字符」估算折行，中文一个字实际 13~14px，
+    于是一条普通提醒在 683 宽（Win11 半屏贴靠）的窗口里会撑到 769 宽、x=-43，
+    左右两头各被切掉几十像素——用户看到的是提醒本身缺字。
+    """
+
+    def _adjustText(self) -> None:
+        p = self.parent()
+        if p is None:
+            return super()._adjustText()
+        limit = max(200, p.width() - 24)        # 整条提醒允许的宽度上限
+        avail = max(150, min(600, limit - 154))  # 154 = 图标 + 内外边距 + 关闭按钮那一圈
+        fm_title = QFontMetrics(self.titleLabel.font())
+        fm_content = QFontMetrics(self.contentLabel.font())
+        for _ in range(3):
+            self.titleLabel.setText(_wrap_px(fm_title, self.title, avail))
+            self.contentLabel.setText(_wrap_px(fm_content, self.content, avail))
+            self.adjustSize()
+            if self.width() <= limit:
+                break
+            # 样式表字体比 font() 拿到的大时一轮折不准，按超出的量再收一次
+            avail = max(150, avail - (self.width() - limit))
 
 
 class PollWorker(QThread):
@@ -568,14 +609,15 @@ class MainWindow(FluentWindow):
         """干完一件事必须说一声：前台用 InfoBar，窗口收进托盘时退回托盘气泡。
         打包后 console=False，不吭声的失败和用户听到的「没反应」是同一件事。"""
         if self.isVisible() and not self.isMinimized():
-            from qfluentwidgets import InfoBar, InfoBarPosition
-            show = {"success": InfoBar.success, "info": InfoBar.info,
-                    "warning": InfoBar.warning, "error": InfoBar.error}[kind]
+            from qfluentwidgets import InfoBarIcon, InfoBarPosition
+            icon = {"success": InfoBarIcon.SUCCESS, "info": InfoBarIcon.INFORMATION,
+                    "warning": InfoBarIcon.WARNING, "error": InfoBarIcon.ERROR}[kind]
             # 全用关键字：qfluentwidgets 各版本 success() 的形参顺序不一样
             # （本机这版是 title, content, orient, isClosable, duration, position, parent），
             # 按位置传会把 InfoBarPosition 塞进 isClosable，直接 TypeError。
-            show(title, content, duration=5000, position=InfoBarPosition.TOP,
-                 parent=self, isClosable=True)
+            _ToastBar(icon, title, content, duration=5000,
+                      position=InfoBarPosition.TOP, parent=self,
+                      isClosable=True).show()
             return
         from PySide6.QtWidgets import QSystemTrayIcon
         icon = {"success": QSystemTrayIcon.MessageIcon.Information,
