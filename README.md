@@ -18,12 +18,14 @@
 - **月流量上限**：按计费周期统计经代理的流量，80% 托盘预警、超限再提醒（本地流量不计入，可设重置日）
 - **托盘常驻 + 悬浮速率条**：关窗最小化到托盘；悬浮条可拖动、可置顶、可锁定位置
 - **陌生连接提醒**：某软件第一次连接某个目标时弹托盘通知（同软件每小时限 1 条）
+- **单实例**：程序在托盘里时再双击图标，会把已有窗口叫到前台而不是另开一份（双份会多一个托盘图标、两条采集线程并发写同一个历史库）
 
 ## 使用方法
 
 1. 双击 `TrafficBoard.exe`（若弹出管理员确认请选"是"，可看到更全的系统级进程）
 2. 完事。顶部标题栏会显示 Clash 连接状态、当前数据源与本次运行累计流量
 3. 关闭窗口即最小化到托盘（可在设置里改为直接退出）
+4. 再双击图标 = 把窗口叫回前台，不会多开一份
 
 ## 技术架构
 
@@ -56,9 +58,30 @@ python tests/adv_nics.py          # 物理网卡甄别（TUN 双重计数防护�
 python tests/adv_quota.py         # 计费周期/阈值/告警状态机
 python tests/adv_secret.py        # 控制器密钥发现与 401 语义
 python tests/adv_process_exit.py  # 真实子进程退出：3 模式 × 8 轮断言 rc=0
+python tests/adv_single_instance.py  # 单实例：真子进程 + 命名管道 + 并发抢注
+python tests/render_v10_smoke.py  # 离屏渲染冒烟（五页导航 + 退出路径）
 python tests/render_v161.py       # 离屏渲染验收（排行双模式）
 python tests/render_v162.py       # 离屏渲染验收（总览/配额设置）
+python tests/render_v16_health.py # 离屏渲染验收（体检页三态）
 ```
+
+## 构建与发布
+
+```bash
+python -m PyInstaller --noconfirm --distpath dist --workpath build TrafficBoard.spec
+cp -r dist/TrafficBoard out/<版本号>/          # 桌面快捷方式指向 out/<版本号>/TrafficBoard/TrafficBoard.exe
+python - <<'PY'                                # 打包成发布用 zip（根目录即 TrafficBoard/）
+import os, zipfile, pathlib
+src = pathlib.Path('out/<版本号>/TrafficBoard'); zp = pathlib.Path(f'TrafficBoard-v<版本号>-win64.zip')
+with zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED) as z:
+    for p in sorted(src.rglob('*')):
+        if p.is_file(): z.write(p, os.path.relpath(p, src.parent))
+PY
+```
+
+版本号只在 `src/core/version.py` 定义（关于页、out/ 目录名、zip 名、Release 标签都取它）。
+发布前先跑全套 `adv_*.py` + `render_*.py`（全部要求 rc=0），再打 tag、建 Release、传 zip，
+最后按 sha256 核对附件——GitHub 附件的 `digest` 字段就是它。
 
 ## 已知边界（如实说明）
 
