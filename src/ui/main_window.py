@@ -26,18 +26,96 @@ from ui.wavegraph import WaveGraph
 from ui.ranklist import RankList, _fmt_bytes
 
 
+_WIDE_START = 0x2E80        # 这个码位之后基本是中日韩字与全角标点，可逐字断行
+_SOFT_BREAK = "/\\-_.:;,?&%="  # 路径/URL/文件名里允许紧跟其后断行的分隔符
+
+
+def _is_wide(ch: str) -> bool:
+    return ord(ch) >= _WIDE_START
+
+
+def _units(para: str) -> list:
+    """切成断行单元：中日韩一个字一个单元，连续的 ASCII 是一整块。
+
+    分成 ASCII 整块是关键——按字符断会把 C:\\...\\Downloads 折成
+    "...Download" + "s\\traffic_detail..."，用户照着抄就少个 s。
+    """
+    out: list = []
+    cur = ""
+    for ch in para:
+        if ch == " " or _is_wide(ch):
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(ch)
+        else:
+            cur += ch
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _split_long(fm: QFontMetrics, unit: str, px: int) -> list:
+    """单个单元比行还宽（长路径、长 URL）：先在分隔符后断，断不开才逐字。"""
+    pieces, cur = [], ""
+    for i, ch in enumerate(unit):
+        cur += ch
+        # 数字之间的点不断：v1.6.3 断成 "v1.6." + "3" 比不断还难读
+        if ch in _SOFT_BREAK and not (ch == "." and i + 1 < len(unit)
+                                      and unit[i + 1].isdigit()):
+            pieces.append(cur)
+            cur = ""
+    if cur:
+        pieces.append(cur)
+
+    merged: list = []
+    line = ""
+    for p in pieces:
+        if line and fm.horizontalAdvance(line + p) > px:
+            merged.append(line)
+            line = p
+        else:
+            line += p
+    if line:
+        merged.append(line)
+
+    out: list = []
+    for m in merged:
+        while fm.horizontalAdvance(m) > px and len(m) > 1:
+            k = len(m)
+            while k > 1 and fm.horizontalAdvance(m[:k]) > px:
+                k -= 1
+            out.append(m[:k])
+            m = m[k:]
+        if m:                       # 正好整除时别多吐一个空行
+            out.append(m)
+    return out
+
+
 def _wrap_px(fm: QFontMetrics, text: str, px: int) -> str:
-    """按真实像素宽度折行（中文没有空格，只能一个字一个字试）。"""
+    """按真实像素宽度折行：中文逐字可断，ASCII 词（路径/URL/文件名）保持完整。"""
     lines = []
     for para in text.split("\n"):
         cur = ""
-        for ch in para:
-            if cur and fm.horizontalAdvance(cur + ch) > px:
-                lines.append(cur)
-                cur = ch
+        for unit in _units(para):
+            if unit == " ":
+                if cur:
+                    cur += " "      # 行尾空格最后 rstrip 掉，不占宽度
+                continue
+            if fm.horizontalAdvance(unit) > px:
+                for piece in _split_long(fm, unit, px):
+                    if cur and fm.horizontalAdvance(cur + piece) > px:
+                        lines.append(cur.rstrip())
+                        cur = piece
+                    else:
+                        cur += piece
+                continue
+            if cur and fm.horizontalAdvance(cur + unit) > px:
+                lines.append(cur.rstrip())
+                cur = unit
             else:
-                cur += ch
-        lines.append(cur)
+                cur += unit
+        lines.append(cur.rstrip())
     return "\n".join(lines)
 
 
