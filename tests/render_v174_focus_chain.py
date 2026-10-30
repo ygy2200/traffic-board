@@ -306,6 +306,68 @@ def _child() -> int:
     assert win.stackedWidget.currentIndex() != idx, "装了两次过滤器后空格反而不能翻页了"
     print("10) 重跑装配幂等，空格仍只切一页 PASS")
 
+    # ---- 11. Ctrl 切页：不依赖焦点在哪，左侧高亮跟着走 ----
+    # R21 实测的代价（tmp/probe_tab_cost.py，起点=该页第一个可 Tab 的控件）：
+#    页签在链里的位置跟着页面走——体检页 1 跳、
+    # 历史页 2 跳、帮助页 3 跳、首页搜索框里 5 跳、设置页从滚动区要 15 跳。
+    # 链是单进单出的循环（一个控件只能有一个后继），没法给每页都把页签提到最前，
+    # 所以给「切页」本身一条不依赖焦点位置的路。加之前这些键实测全是空的。
+    n_pages = win.stackedWidget.count()
+    assert len(win._page_shortcuts) == n_pages + 2, \
+        f"快捷键件数不对：{len(win._page_shortcuts)} 应为 {n_pages}+2"
+    panel = win.navigationInterface.panel
+    assert hasattr(panel, "_currentRouteKey"), "库换了？导航选中状态没法量了"
+    for i in range(n_pages):
+        (win._nav_items[0] if i % 2 else win.search).setFocus()
+        settle(120)
+        QTest.keyClick(app.focusWidget(), Qt.Key_1 + i, Qt.ControlModifier)
+        settle(400)
+        got = win.stackedWidget.currentIndex()
+        assert got == i, f"Ctrl+{i + 1} 没跳到第 {i} 页（现在 {got}）"
+        want = win.stackedWidget.widget(i).objectName()
+        assert panel._currentRouteKey == want, \
+            f"页翻过去了但左侧高亮还指着 {panel._currentRouteKey!r}（应为 {want!r}）"
+
+    win._switch_page(0)
+    settle(250)
+    fwd = []
+    for _ in range(3):
+        QTest.keyClick(app.focusWidget(), Qt.Key_Tab, Qt.ControlModifier)
+        settle(300)
+        fwd.append(win.stackedWidget.currentIndex())
+    assert fwd == [1, 2, 3], f"Ctrl+Tab 没依次往前翻：{fwd}"
+    bwd = []
+    for _ in range(5):
+        QTest.keyClick(app.focusWidget(), Qt.Key_Tab,
+                       Qt.ControlModifier | Qt.ShiftModifier)
+        settle(300)
+        bwd.append(win.stackedWidget.currentIndex())
+    assert bwd == [2, 1, 0, n_pages - 1, n_pages - 2], \
+        f"Ctrl+Shift+Tab 没依次往后翻或没绕回：{bwd}"
+
+    win.search.clear()
+    win.search.setText("abc")
+    win.search.setFocus()
+    settle(150)
+    QTest.keyClick(win.search, Qt.Key_1, Qt.ControlModifier)
+    settle(300)
+    assert win.search.text() == "abc", f"Ctrl+1 往搜索框里插了字符：{win.search.text()!r}"
+    assert win.stackedWidget.currentIndex() == 0, "搜索框里按 Ctrl+1 没回首页"
+
+    for sc in win._page_shortcuts:
+        sc.setEnabled(False)
+    win.table.setFocus()
+    settle(120)
+    idx_before = win.stackedWidget.currentIndex()
+    QTest.keyClick(app.focusWidget(), Qt.Key_3, Qt.ControlModifier)
+    settle(350)
+    assert win.stackedWidget.currentIndex() == idx_before, \
+        "把快捷键关掉后还能翻页——那第 11 步量的是别的东西在翻页"
+    for sc in win._page_shortcuts:
+        sc.setEnabled(True)
+    print(f"11) Ctrl+1..{n_pages} 从任意焦点都翻对页且高亮跟上、Ctrl+Tab 正反面绕回、"
+          f"不插字符、关掉快捷键就翻不动 PASS")
+
     return 0
 
 

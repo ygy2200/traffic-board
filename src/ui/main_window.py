@@ -8,7 +8,8 @@ import time
 
 import psutil
 from PySide6.QtCore import QEvent, QPoint, QSettings, QThread, Qt, Signal, QTimer
-from PySide6.QtGui import QColor, QFontMetrics, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import (
+    QColor, QFontMetrics, QKeySequence, QMouseEvent, QPainter, QPen, QShortcut)
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QPushButton, QTableWidgetItem,
     QVBoxLayout, QWidget, QSplitter, QSizePolicy,
@@ -131,8 +132,17 @@ class _ToastBar(InfoBar):
         p = self.parent()
         if p is None:
             return super()._adjustText()
-        limit = max(200, p.width() - 24)        # 整条提醒允许的宽度上限
-        avail = max(150, min(600, limit - 154))  # 154 = 图标 + 内外边距 + 关闭按钮那一圈
+        limit = max(200, p.width() - 24)  # 整条提醒允许的宽度上限
+        # 一行最多 600px：约 40 个中写字，再宽就不是"一句提醒"而是"一段正文"了。
+        # 库原版按 120 个字符封顶（它用 9px/字符估算），这是同一个意图的真实像素版。
+        cap = 600
+        # 「图标 + 内外边距 + 关闭按钮」那一圈不写死凑数：第一轮用库里的常数几何
+        # （iconWidget 36 + closeButton 36 + 外边距 6+6 + 文本内边距 1 + addSpacing(12)
+        # + textLayout spacing 5 = 102），之后每一轮改成量自己上一次的实际这一圈
+        # （条宽 - 文字宽，实测 167 且与父宽无关）。
+        # 原来写死的 154 比实测少 13px，所以第一轮几乎总能差一点点、要靠循环再收一次。
+        chrome = 102
+        avail = max(150, min(cap, limit - chrome))
         fm_title = QFontMetrics(self.titleLabel.font())
         fm_content = QFontMetrics(self.contentLabel.font())
         for _ in range(3):
@@ -141,8 +151,10 @@ class _ToastBar(InfoBar):
             self.adjustSize()
             if self.width() <= limit:
                 break
-            # 样式表字体比 font() 拿到的大时一轮折不准，按超出的量再收一次
-            avail = max(150, avail - (self.width() - limit))
+            # 样式表字体比 font() 拿到的大时一轮折不准：拿实测的那一圈重算可用宽
+            chrome = max(chrome, self.width() - max(self.titleLabel.width(),
+                                                    self.contentLabel.width()))
+            avail = max(150, min(cap, limit - chrome))
 
 
 class PollWorker(QThread):
@@ -498,6 +510,7 @@ class MainWindow(FluentWindow):
         self._init_tray()
         self._init_badge()
         self._setup_key_chain()
+        self._init_page_shortcuts()
 
     # ---- 键盘焦点链 ----
     def _setup_key_chain(self) -> None:
@@ -539,6 +552,40 @@ class MainWindow(FluentWindow):
             it._focus_ring = _FocusRing(it)
             it.installEventFilter(self)
         self._nav_items = items
+
+    # ---- 键盘切页：不靠 Tab 走到页签 ----
+    def _init_page_shortcuts(self) -> None:
+        """Ctrl+1..5 跳到第 N 页，Ctrl+Tab / Ctrl+Shift+Tab 依次翻页。
+
+        为什么不重排 Tab 链来省掉这几次按键：链是**单进单出**的循环，一个控件
+        只能有一个后继（tmp/probe_reach.py 试过 setTabOrder，能把冷启动那一页的
+        页签提到第 1 跳，但代价是把搜索框的清除键挤到表格后面，而且其它页提不上去）。
+        实测页签到页签的跳数跟着页面走（tmp/probe_keys.py）：体检页 1 跳、历史页 2 跳、
+        帮助页 3 跳、首页搜索框里 5 跳、设置页从滚动区要 15 跳——键盘用户想换个页
+        得先数着按十几次 Tab。所以给「切页」这个动作本身一条不依赖焦点位置的路。
+        这几个键加之前实测全是空的：不改页、不挪焦点、Ctrl+1 也不会往搜索框里插字符。
+        """
+        self._page_shortcuts = []
+        for i in range(self.stackedWidget.count()):
+            self._page_shortcuts.append(self._bind_page_key(f"Ctrl+{i + 1}", i=i))
+        self._page_shortcuts.append(self._bind_page_key("Ctrl+Tab", step=1))
+        self._page_shortcuts.append(self._bind_page_key("Ctrl+Shift+Tab", step=-1))
+
+    def _bind_page_key(self, seq: str, i: int | None = None, step: int = 0) -> QShortcut:
+        sc = QShortcut(QKeySequence(seq), self)
+        sc.setContext(Qt.ShortcutContext.WindowShortcut)
+        if i is not None:
+            sc.activated.connect(lambda i=i: self._switch_page(i))
+        else:
+            sc.activated.connect(lambda: self._switch_page(
+                self.stackedWidget.currentIndex() + step))
+        return sc
+
+    def _switch_page(self, index: int) -> None:
+        """越界绕回（Ctrl+Shift+Tab 在第一页时该落到最后一页），并走库自己的 switchTo，
+        这样左侧高亮和 qrouter 跟着一起变，不会翻页了页签还指着旧页。"""
+        n = self.stackedWidget.count()
+        self.switchTo(self.stackedWidget.widget(index % n))
 
     @staticmethod
     def _synth_click(w) -> None:

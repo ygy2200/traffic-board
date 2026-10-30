@@ -33,6 +33,7 @@ AA_LARGE = 3.0
 
 app = None
 win = None
+clipped = set()       # 被视口过滤器挡掉的标签（按 id 去重，只算"跳过过"的有哪些）
 
 
 def _settle(ms=200):
@@ -66,10 +67,34 @@ def _modal(pixels):
     return best, cnt
 
 
+def _scroll_area_of(w):
+    from PySide6.QtWidgets import QAbstractScrollArea
+
+    p = w.parentWidget()
+    while p is not None:
+        if isinstance(p, QAbstractScrollArea):
+            return p
+        p = p.parentWidget()
+    return None
+
+
 def _measure(img, dpr, w, host):
     """返回 (对比度, 前景, 背景, 墨占比)；标签没完整落在可视区里返回 None。"""
     from PySide6.QtCore import QPoint
 
+    # 被滚出视口的子件 isVisibleTo() 依然为真、mapTo(page) 也仍落在页面矩形里，
+    # 但它一个像素都没画——量到的是视口外那块屏幕（别的控件的底色）。
+    # 实测误报过流量页三处「N 条」：采样区落在视口上方的卡片底 (30,30,30)，
+    # 判成"与背景同色的隐形文字"。全量回归里红、单独跑又绿，就是因为它
+    # 取决于当时排行榜有多少行、滚到了哪一格。
+    area = _scroll_area_of(w)
+    if area is not None:
+        vp = area.viewport()
+        rel = w.mapTo(vp, QPoint(0, 0))
+        if (rel.x() < 0 or rel.y() < 0
+                or rel.x() + w.width() > vp.width() or rel.y() + w.height() > vp.height()):
+            clipped.add(id(w))
+            return None
     top = w.mapTo(host, QPoint(0, 0))
     x0, y0 = int(top.x() * dpr), int(top.y() * dpr)
     x1, y1 = x0 + int(w.width() * dpr), y0 + int(w.height() * dpr)
@@ -92,6 +117,29 @@ def _measure(img, dpr, w, host):
     ink.sort(key=lambda c: -abs(_lum(c) - _lum(bg)))
     fg, _ = _modal(ink[:max(1, len(ink) // 50)])
     return (_ratio(fg, bg), fg, bg, len(ink) / len(cols))
+
+
+def _raw_ink(img, dpr, w, host):
+    """照旧写法采那块矩形（不做视口过滤），返回 (墨点数, 是否整块落在图内)。
+
+    第 2b 步用它证明"被裁的标签量到的是零墨点"——过滤器不是洁癖，
+    少了它这一步就会把那块像素判成隐形文字。
+    """
+    from PySide6.QtCore import QPoint
+
+    top = w.mapTo(host, QPoint(0, 0))
+    x0, y0 = int(top.x() * dpr), int(top.y() * dpr)
+    x1, y1 = x0 + int(w.width() * dpr), y0 + int(w.height() * dpr)
+    inside = x0 >= 0 and y0 >= 0 and x1 <= img.width() and y1 <= img.height()
+    cols = []
+    for y in range(max(y0, 0), min(y1, img.height())):
+        for x in range(max(x0, 0), min(x1, img.width())):
+            p = img.pixel(x, y)
+            cols.append(((p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF))
+    if not cols:
+        return 0, inside
+    bg, _ = _modal(cols)
+    return len([c for c in cols if max(abs(c[i] - bg[i]) for i in range(3)) >= 40]), inside
 
 
 def _pages():
@@ -147,7 +195,7 @@ def _board(online: bool):
     from core.clash_api import ClashState
 
     apps = []
-    for i in range(6):
+    for i in range(12):          # 12 行 > 视口，滚动条真的会出来——上一版漏报正是滚动引出的
         conns = [ConnView(proto="tcp", target=f"host-{i}-{j}.example.com:443",
                           channel="proxy", node="HK-1", download=1000 * (i + 1),
                           upload=100, from_clash=True, conn_id=f"c{i}{j}")
@@ -182,6 +230,12 @@ def _child() -> int:
     win = mw.MainWindow(agg)
     win.alert_enabled = False
     win.resize(1000, 700)
+    # 光 stub agg.start 不够：MainWindow 自己起了 PollWorker，它每秒 agg.build()
+    # 拿的是这台机器真实的连接，排行榜会被真人数据盖掉（现场量到 16 行、
+    # 行里写着「FlClash 内核」「22 条」）。闸门量的是渲染像素，数据是谁的不重要，
+    # 但行数/文字长度一变，被裁掉的标签就变——这才是"全量回归红、单独跑绿"的来源。
+    win.worker.stop()
+    win.worker.wait(3000)
     _settle(350)
 
     # ---- 1) 量的必须是被真实画出来的深色界面 ----
@@ -201,11 +255,41 @@ def _child() -> int:
     assert len(rows) >= MIN_LABELS, f"只量到 {len(rows)} 处文字（门槛 {MIN_LABELS}）"
     print(f"2) 逐屏滚动量到 {len(rows)} 处文字（门槛 {MIN_LABELS}）PASS")
 
+    # ---- 2b) 被滚出视口的标签一个都不许进账（这条曾经误报「N 条」隐形）----
+    from PySide6.QtCore import QPoint
+
+    sa = win.rank.scroll
+    sa.verticalScrollBar().setValue(0)
+    _settle(250)
+    mmax = sa.verticalScrollBar().maximum()
+    assert mmax > 0, f"排行榜 12 行没把视口撑满（max={mmax}），这一步没法演示被裁的标签"
+    top_row = next(w for i in range(win.rank.v.count())
+                   if (w := win.rank.v.itemAt(i).widget()) is not None)
+    lbl = top_row.lbl_name
+    vp_top = sa.viewport().mapTo(dash, QPoint(0, 0)).y()
+    # 把第一行正好推到"视口上方、但整块还留在页面里"的空档：
+    # 这个位置旧的越界检查放行，视口过滤器必须拦住，否则量的是别人的像素。
+    want_y = max(0, (vp_top - lbl.height()) // 2)
+    sa.verticalScrollBar().setValue(min(mmax, lbl.mapTo(dash, QPoint(0, 0)).y() - want_y))
+    _settle(250)
+    img = dash.grab().toImage()
+    dpr = img.devicePixelRatio() or 1.0
+    rel = lbl.mapTo(sa.viewport(), QPoint(0, 0))
+    assert rel.y() < 0, f"这一行没被滚出视口（rel.y={rel.y()}），量不到被裁的标签"
+    assert _measure(img, dpr, lbl, dash) is None, "被滚出视口的标签还是进了账"
+    ink, inside = _raw_ink(img, dpr, lbl, dash)
+    assert inside, "那块矩形越过了位图边界——旧的越界检查在替视口过滤背锅，前提变了"
+    verdict = "判成隐形文字" if ink == 0 else f"判成别人的字（{ink} 个墨点是别人的）"
+    print(f"2b) 第一行裁出视口 {-rel.y()}px 但整块仍在页面内：现在跳过；"
+          f"没有这道过滤就会被{verdict} PASS")
+    sa.verticalScrollBar().setValue(0)
+    _settle(200)
+
     # ---- 3) 不许有"与背景同色"的隐形文字 ----
     ghost = [r for r in rows if r[7] == 0.0]
     assert not ghost, "隐形文字（与背景同色）：\n" + "\n".join(
         f"  {r[2]}/{r[3]} 「{r[4]}」 fg={r[5]} bg={r[6]}" for r in ghost[:8])
-    print("3) 与背景同色的隐形文字 0 处 PASS")
+    print(f"3) 与背景同色的隐形文字 0 处 PASS（本轮另有 {len(clipped)} 个标签被滚出视口、按裁剪跳过）")
 
     # ---- 4) WCAG AA：正文 4.5:1，大字 3:1 ----
     bad = sorted([r for r in rows if r[0] < r[1]], key=lambda r: r[0])

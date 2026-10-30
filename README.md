@@ -71,10 +71,10 @@ python tests/render_v167_detail_empty.py # 离屏渲染验收（明细表三种�
 python tests/render_v168_small_screen.py # 离屏渲染验收（1366x720 小屏：最小尺寸 + 省略号，喂数据测量）
 python tests/render_v169_infobar_fit.py # 离屏渲染验收（前台提醒条宽度不超窗口，含半屏贴靠）
 python tests/render_v170_settings_fit.py # 离屏渲染验收（设置页极限宽度无横向滚动条，配额行自动折行）
-python tests/render_v171_contrast.py # 真实像素文字对比度闸门（五页逐屏滚动，量 89 处，非离屏）
+python tests/render_v171_contrast.py # 真实像素文字对比度闸门（五页逐屏滚动，量 106 处，非离屏）
 python tests/render_v172_infobar_words.py # 真实像素折行闸门（提醒条不许把路径/URL 劈开，非离屏）
 python tests/render_v173_badge_gate.py # 悬浮速率条闸门（半透明合成后的对比度 + 最长速率串不越界 + 悬浮说明，非离屏）
-python tests/render_v174_focus_chain.py # 键盘焦点链闸门（初始焦点/Tab 链可达/表格不困住 Tab/页签能空格翻页）
+python tests/render_v174_focus_chain.py # 键盘闸门（初始焦点/Tab 链可达/表格不困住 Tab/页签空格翻页/Ctrl+1..5 与 Ctrl+Tab 切页）
 ```
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
@@ -98,7 +98,22 @@ grab 出来的卡片底是 Qt 默认浅灰（qfluentwidgets 的主题背景根�
 两个套件都不 `show()` 窗口，只 `grab()` 位图——实测 windows 平台下不弹窗也能拿到真图。
 对比度套件的前景取「离背景最远的 2% 像素的众数」而不是墨色众数：小字号中文全是抗锯齿边，墨色众数量到的是灰边，
 实测把白字算成 (120,120,120)、对比度直接虚降一半。阈值取 WCAG AA（正文 4.5:1、
-大字 3:1），量的是五页逐屏滚动下所有完整可见的标签（当前 89 处，帮助页加了键盘那 6 条）。
+大字 3:1），量的是五页逐屏滚动下所有完整可见的标签（当前 106 处，帮助页加了键盘那 6 条）。
+
+R21 把这道闸门自己修了两个漏，因为它当时是全场唯一会**偶发**红的套件（全量回归 rc=1、单独跑 rc=0）：
+① 数据漏：`agg.start = lambda: None` 只挡住 Aggregator 自己的线程，`MainWindow.__init__` 另起了
+一个 `PollWorker`，它每秒 `agg.build()` 拿的是**这台机器真实的连接**——现场量到排行榜 16 行、
+行里写着「FlClash 内核」「22 条」，`_board()` 喂进去那 6 个假软件早被盖掉了。闸门量渲染像素，
+数据是谁的不要紧，但行数和文字长度一变，被裁的标签就跟着变，红绿就成了看当时网络状态的抽奖。
+现在建完窗口先 `worker.stop() + wait()`，三次连跑数字与留图字节数完全一致。
+② 采样漏：被滚出视口的子件 `isVisibleTo()` 依然为真、`mapTo(page)` 也仍落在页面矩形里，
+但它一个像素都没画，于是量到的是"视口上方那块屏幕"（别人的底色）。旧代码只有一道越界检查兜着，
+恰好能拦住滚到**下面**的；滚到上面的会误报成"与背景同色的隐形文字"——那条红就是这么来的。
+现在 `_measure` 先按所属滚动区视口过滤，并加了第 2b 步：把第一行正好推到"裁出视口 154px、
+整块却仍在页面内"的空档，断言它被跳过（`tmp/probe_rank_ghost.py` 量到这个位置的墨点是 0）。
+把过滤器删掉重跑必须红（实测 `FAIL: 被滚出视口的标签还是进了账`），所以这一步是承重的、不是装饰。
+其余 render_* 套件同样被 PollWorker 喂真数据，本轮只修了出问题这一道闸门——它们没有断言行数，
+暂时没看到这个漏的后果。
 
 `render_v174_focus_chain.py` 是唯一**必须** `show()` 的渲染套件，因为 Qt 只给可见窗口设焦点：
 在隐藏窗口上量焦点链会量出一条假链——隐藏时所有子件 `isVisible()` 都是 False，
@@ -129,12 +144,27 @@ Alt+F4 与 Alt+空格 照常（`tmp/probe_hwnd_style.py`）。
 闸门逐点比色确认真的画出来了（离屏 34/168、真平台 57/255，且变化点全部贴边）。
 
 链序也被闸门钉住（两个平台量出来一样）：搜索框第 1 跳 → 明细表第 7 跳 → 5 个页签第 8–12 跳。
-页签排在最后是库的装配顺序决定的（内容区先进窗口），从首页走到页签要按 8 次 Tab——
-这条如实写进帮助页，改它要重写 `focusNextPrevChild`，风险大于收益，暂不动。
+页签排在最后是库的装配顺序决定的（内容区先进窗口）——R21 就是冲这条来的，见下。
 
 `tests/render_v16*.png`、`render_v17*.png` 这些留图**不是基线**：同一份代码连跑两次就差 3.7 万个像素
 （`render_v168_small_screen.py` 实测，逐点最大差 226），是字形亚像素定位的不确定量，没有任何套件读它们。
 以后重跑回归看到它们集体变脏，别当成视觉回归，也别为它们起一个提交。
+
+R21（同一道闸门加到 11 步）先把 R20 留的那条"页签要按 8 次 Tab"量成实话：逐页量下来，
+从页内焦点走到页签的跳数是 体检 1 / 历史 2 / 帮助 3 / 首页搜索框 5 / **设置页从滚动区 15**
+（`tmp/probe_tab_cost.py` 复测，定义钉死：起点=该页第一个可 Tab 的控件，按真 Tab 键逐跳走到焦点落进页签为止）。想靠重排链条解决不掉：Qt 的 Tab 链是**单进单出**的循环，一个控件只能有
+一个后继，`setTabOrder` 能把冷启动那一页的页签提到第 1 跳（`tmp/probe_reach.py` 实测），
+代价是把搜索框的清除键挤到表格后面、而且其它四页根本提不上去。所以不动链，
+给「切页」本身加一条不依赖焦点位置的路：**Ctrl+1..5** 直接跳到第 N 页、
+**Ctrl+Tab / Ctrl+Shift+Tab** 前后翻且绕回。加之前这些键实测全是空的（不改页、不挪焦点、
+Ctrl+1 也不会往搜索框里插字符），走库自己的 `switchTo()` 所以左侧高亮和 qrouter 跟着一起变。
+闸门第 11 步把这几条都钉住，并加了反向对照：把快捷键 setEnabled(False) 之后必须翻不动页。
+
+同一轮把 `_ToastBar` 里那个写死的 154 换成实测：图标+边距+关闭按钮那一圈按库的常数几何是 102
+（iconWidget 36 + closeButton 36 + 外边距 6+6 + 文本内边距 1 + addSpacing(12) + spacing 5），
+但真条子量出来是 167 且与父宽无关——154 是当年凑的，比实测少 13px，于是第一轮几乎总能差一点点、
+要靠循环再收一次。现在第一轮用常数几何、之后每轮用上一次量到的那一圈，
+极限 456 宽那条提醒从 433 收到 419（`render_v169_infobar_fit.py` 第 6 步）。
 
 顺带把"要不要开浅色主题"量清楚了：本机 Windows 处于深色模式，Qt 的基础调色板就是
 `#1e1e1e`，而 `setTheme(Theme.LIGHT)` 只重刷 qfluentwidgets 自己注册的控件，
@@ -212,6 +242,18 @@ PY
 版本号只在 `src/core/version.py` 定义（关于页、out/ 目录名、zip 名、Release 标签都取它）。
 发布前先跑全套 `adv_*.py` + `render_*.py`（全部要求 rc=0），再打 tag、建 Release、传 zip，
 最后按 sha256 核对附件——GitHub 附件的 `digest` 字段就是它。
+
+```bash
+python scripts/release.py --tag v1.6.5 --title "Traffic Board v1.6.5" \
+    --notes tmp/release-notes-v1.6.5.md --zip TrafficBoard-v1.6.5-win64.zip
+```
+
+`scripts/release.py` 取代了以前每轮 sed 复制出来的一份 `publishXXX.py`，顺序是硬的：
+先扫发布说明里没填完的 `@XXX@` 占位符（**在拿 token 之前**拒，避免发半份说明）→
+`git credential fill` 取 token（只打印长度与后 4 位，从不打印明文）→ 建 Release
+（422「已存在」就复用那个 tag）→ 传附件 → 按本地 sha256 比对 digest（GitHub 惰性算摘要，重试 6 次）→
+**最后抓公开的 `/releases` 页面 HTML，里面必须能看见这个 tag**。
+前面几步全绿但公开列表看不见，对用户来说就是没发布。
 
 ## 已知边界（如实说明）
 
