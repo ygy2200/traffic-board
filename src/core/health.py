@@ -104,6 +104,13 @@ def _reg_proxy_port() -> int:
         return 0
 
 
+def _api_headers(agg) -> Dict[str, str]:
+    """控制器密钥的单一来源是轮询器（含 401 后自动发现的值）。体检请求必须带上，
+    否则密钥生效后会 401，被下面"无应答"分支误报成节点/端口问题。"""
+    sec = getattr(agg.clash, "secret", "")
+    return {"Authorization": f"Bearer {sec}"} if sec else {}
+
+
 def _api_mixed_port(agg, timeout: float = 2.0) -> int:
     """从 mihomo /configs 读 mixed-port（回退 port/socks-port）。读不到返回 0。"""
     st = agg.clash.snapshot()
@@ -111,7 +118,8 @@ def _api_mixed_port(agg, timeout: float = 2.0) -> int:
         return 0
     try:
         s = _direct_session()
-        r = s.get(f"http://127.0.0.1:{st.port}/configs", timeout=timeout)
+        r = s.get(f"http://127.0.0.1:{st.port}/configs",
+                  headers=_api_headers(agg), timeout=timeout)
         data = r.json() if r.ok else None
         if isinstance(data, dict):
             for key in ("mixed-port", "port", "socks-port"):
@@ -251,7 +259,7 @@ def _check_nodes(agg) -> HealthItem:
     base = f"http://127.0.0.1:{port}"
     try:
         s = _direct_session()   # R4：禁环境代理变量，防 http_proxy 瘫痪本机 API 调用
-        r = s.get(f"{base}/proxies", timeout=2.5)
+        r = s.get(f"{base}/proxies", headers=_api_headers(agg), timeout=2.5)
         proxies = (r.json() or {}).get("proxies") or {}
     except Exception:
         return HealthItem("nodes", "节点可用性", SEV_WARN,
@@ -266,11 +274,13 @@ def _check_nodes(agg) -> HealthItem:
     if not test_list:
         return HealthItem("nodes", "节点可用性", SEV_INFO, "该分组无可选节点")
 
+    hdrs = _api_headers(agg)
+
     def _delay(name: str):
         try:
             u = (f"{base}/proxies/{quote(name, safe='')}/delay"
                  f"?timeout=2500&url={quote('https://www.google.com/generate_204', safe='')}")
-            rr = _direct_session().get(u, timeout=4)
+            rr = _direct_session().get(u, headers=hdrs, timeout=4)
             return name, int((rr.json() or {}).get("delay") or 0)
         except Exception:
             return name, 0
@@ -310,6 +320,12 @@ def _check_api_online(agg) -> HealthItem:
                           f"当前 {len(st.conns)} 条连接",
                           evidence=f"version={st.version} port={st.port} "
                                    f"conns={len(st.conns)}")
+    if getattr(st, "auth_failed", False):
+        return HealthItem("api", "mihomo API 在线", SEV_FAIL,
+                          "控制器有应答但要求密钥（401），看板拿不到按进程字节数",
+                          fix="在 FlClash「设置 → 外部控制器」清空密钥，或把密钥写进它的 "
+                              "config.yaml（看板会自动读取该文件里的 secret 行）",
+                          evidence="端口有应答，HTTP 401 Unauthorized")
     return HealthItem("api", "mihomo API 在线", SEV_WARN,
                       "未发现 mihomo 外部控制器，看板降级为传统采集模式",
                       fix="打开 FlClash 后自动恢复；若确认已开，检查其「外部控制器」设置")

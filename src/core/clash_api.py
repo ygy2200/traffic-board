@@ -39,6 +39,7 @@ class ClashState:
     conns: List[ClashConn] = field(default_factory=list)
     upload_total: int = 0
     download_total: int = 0
+    auth_failed: bool = False        # 端口有人应答但内核回了 401/403
 
 
 def _int(v) -> int:
@@ -83,14 +84,17 @@ def parse_connections_payload(data: dict, version: str = "") -> ClashState:
 class ClashApiPoller:
     """后台线程 1 秒轮询 /connections；断线自动重探测。"""
 
-    def __init__(self, secret: str = "") -> None:
+    def __init__(self, secret: str = "", auto_discover: bool = True) -> None:
         self.secret = secret
+        self.auto_discover = auto_discover
+        self.secret_source = "manual" if secret else ""
         self.state = ClashState()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._session = None                  # 首次用时才建（requests 懒加载，R6）
         self._last_port: Optional[int] = None   # 上次成功端口，重探测优先试它
+        self._auth_failed = False
 
     def _ensure_session(self):
         """后台线程首次轮询时才 import requests + 建 Session（~277ms 不进启动路径）。
@@ -135,23 +139,44 @@ class ClashApiPoller:
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self.secret}"} if self.secret else {}
 
+    def _discover_secret(self) -> bool:
+        """401 时从内核自己写的 config.yaml 补拿密钥（FlClash 默认设 secret，
+        此前没有任何地方传密钥，导致字节链路恒为 0）。密钥变了也走这里刷新。"""
+        from .flconfig import read
+        cfg = read()
+        if cfg.secret and cfg.secret != self.secret:
+            self.secret = cfg.secret
+            self.secret_source = "config"
+            return True
+        return False
+
     def _probe(self) -> Optional[int]:
         session = self._ensure_session()
         # 上次成功的端口优先（重探测/重启线程时秒级命中，不必扫完整候选表）
         ports = ([self._last_port] if self._last_port else []) + \
                 [p for p in _CANDIDATE_PORTS if p != self._last_port]
+        auth_failed = False
         for port in ports:
             if self._stop.is_set():   # 停止信号下立即放弃探测，保证线程快速退出
                 return None
             try:
                 r = session.get(f"http://127.0.0.1:{port}/version",
                                 headers=self._headers(), timeout=1.2)
+                if r.status_code in (401, 403):
+                    # 有人应答=内核在跑，只是没密钥；与"端口没人监听"是两回事
+                    auth_failed = True
+                    if not (self.auto_discover and self._discover_secret()):
+                        continue
+                    r = session.get(f"http://127.0.0.1:{port}/version",
+                                    headers=self._headers(), timeout=1.2)
                 if r.ok:
                     self._version = r.json().get("version", "")
                     self._last_port = port
+                    self._auth_failed = False
                     return port
             except Exception:
                 continue
+        self._auth_failed = auth_failed
         return None
 
     _version = ""
@@ -178,8 +203,9 @@ class ClashApiPoller:
                 fail += 1
                 if fail >= 10:  # 连续 10 秒失败才视为离线（mihomo 偶发卡顿不应清空排行数据）
                     with self._lock:
-                        self.state = ClashState(online=False)
+                        self.state = ClashState(online=False, auth_failed=self._auth_failed)
                     port = None
+                    fail = 0
             self._stop.wait(1.0)
 
 

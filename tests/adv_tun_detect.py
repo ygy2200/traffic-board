@@ -70,6 +70,8 @@ def test_fakeip_probe_shapes():
 def test_detector_lifecycle():
     """线程生命周期：未启动 snapshot=OFF；start/stop 幂等、stop 可重复。"""
     class _FakePoller:
+        secret = ""
+
         def snapshot(self):
             from core.clash_api import ClashState
             return ClashState(online=False)

@@ -114,9 +114,8 @@ def evaluate(probe: Optional[str], api_tun: bool) -> TunState:
 class TunDetector:
     """后台线程周期判定 TUN 状态；依赖 ClashApiPoller 提供端口/在线状态。"""
 
-    def __init__(self, poller: ClashApiPoller, secret: str = "") -> None:
+    def __init__(self, poller: ClashApiPoller) -> None:
         self._poller = poller
-        self._secret = secret
         self._state = TunState.OFF
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -146,13 +145,17 @@ class TunDetector:
             return self._state
 
     # ---- internals ----
+    def _auth_headers(self) -> dict:
+        """密钥单一来源：轮询器（含 401 自动发现后的值），不再各存一份副本。"""
+        sec = self._poller.secret
+        return {"Authorization": f"Bearer {sec}"} if sec else {}
+
     def _api_tun(self, port: int) -> Tuple[bool, bool]:
         """(api_tun, api_ok)：GET /configs 的 tun.enable。任何异常 = (False, False)。"""
         try:
             r = self._ensure_session().get(
                 f"http://127.0.0.1:{port}/configs",
-                headers=({"Authorization": f"Bearer {self._secret}"}
-                         if self._secret else {}),
+                headers=self._auth_headers(),
                 timeout=2)
             data = r.json() if r.ok else None
             if isinstance(data, dict) and isinstance(data.get("tun"), dict):

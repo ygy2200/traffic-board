@@ -54,6 +54,8 @@ python tests/adv_history.py
 python tests/adv_exit.py
 python tests/adv_nics.py          # 物理网卡甄别（TUN 双重计数防护）
 python tests/adv_quota.py         # 计费周期/阈值/告警状态机
+python tests/adv_secret.py        # 控制器密钥发现与 401 语义
+python tests/adv_process_exit.py  # 真实子进程退出：3 模式 × 8 轮断言 rc=0
 python tests/render_v161.py       # 离屏渲染验收（排行双模式）
 python tests/render_v162.py       # 离屏渲染验收（总览/配额设置）
 ```
