@@ -6,7 +6,9 @@ TerminateProcess 跳过 CRT 清理（v1.5.4）。adv_exit.py 只在单元层测�
 没有任何测试验证"进程真的以 0 退出"，所以本文件补这一层——多轮重复正是为了
 抓间歇性（flaky）而不是逻辑分支。
 
-LOCALAPPDATA 指向临时目录：QSettings 与 known/history 库全部隔离，不碰用户配置。
+LOCALAPPDATA 指向临时目录只隔离了 known/history 两个库——实测 QSettings 在 Windows
+上写注册表（HKCU\\Software\\TrafficBoard），不受 LOCALAPPDATA 影响，所以子进程仍然会
+碰到用户设置；本脚本最外层用 run_isolated() 做进程外快照/还原兜住（曾泄漏 rank/sort）。
 """
 import os
 import subprocess
@@ -15,10 +17,16 @@ import tempfile
 import time
 from pathlib import Path
 
+from _qt_harness import am_child, run_isolated
+
 HERE = Path(__file__).resolve().parent
 DRIVER = HERE / "_exit_driver.py"
 ROUNDS = 8
 TIMEOUT = 90
+
+# 快照/还原由最外层父进程负责；子进程（以及它再派出的驱动）继承 TB_ISOLATED_CHILD
+if not am_child() and os.name == "nt":
+    sys.exit(run_isolated(str(HERE / "adv_process_exit.py")))
 
 
 def _run(mode: str, rounds: int = ROUNDS):

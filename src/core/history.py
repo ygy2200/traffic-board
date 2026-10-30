@@ -14,6 +14,10 @@ import time
 
 
 def default_db_path() -> str:
+    # TB_DATA_DIR：测试/便携模式改数据目录用。不设 = 用户本机数据目录（生产行为不变）。
+    override = os.environ.get("TB_DATA_DIR")
+    if override:
+        return os.path.join(override, "history.sqlite")
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return os.path.join(base, "TrafficBoard", "history.sqlite")
 

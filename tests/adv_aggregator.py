@@ -6,6 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _qt_harness import use_temp_data_dir  # noqa: E402
+use_temp_data_dir("agg")   # 测试专属数据目录：绝不往用户真实历史库写
+
 from core.aggregator import Aggregator  # noqa: E402
 from core.clash_api import ClashConn, ClashState  # noqa: E402
 from core.connections import ConnectionPoller, Snapshot, SysConn  # noqa: E402

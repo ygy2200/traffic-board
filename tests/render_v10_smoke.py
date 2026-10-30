@@ -6,21 +6,28 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _qt_harness import am_child, hard_exit, run_isolated, use_temp_data_dir  # noqa: E402
+
+# 本脚本会清空整棵设置树来测默认态——所以必须让父进程持有还原责任：
+# 进程内还原实测会被被测控件自己的 QSettings 实例缓存覆盖（曾经抹过用户设置）
+if not am_child() and os.name == "nt":
+    sys.exit(run_isolated(str(Path(__file__).resolve())))
+use_temp_data_dir("v10")
 
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from core.aggregator import Aggregator  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
-from _qt_harness import hard_exit  # noqa: E402
 
 
 def main() -> int:
     app = QApplication.instance() or QApplication([])
     qs = QSettings("TrafficBoard", "TrafficBoard")
-    had = dict((k, qs.value(k)) for k in qs.allKeys())
     for k in qs.allKeys():
-        qs.remove(k)
+        qs.remove(k)                             # 从干净状态测默认导航/限额；父进程负责还原
 
     agg = Aggregator()
     agg.start = lambda: None                     # 隔离真实采集线程
@@ -50,13 +57,6 @@ def main() -> int:
     # 设置页新卡片存在
     assert win.page_settings.sp_cap.value() == 0
     assert win.page_settings.sp_reset.value() == 1
-
-    # 恢复用户真设置必须在硬杀退出之前：_quit_app() 走 closeEvent → TerminateProcess，
-    # 它后面的任何语句都不会执行（此前这里的还原代码是死代码，每次跑都抹掉用户设置）。
-    for k, v in had.items():
-        qs.setValue(k, v)
-    qs.sync()
-    assert set(qs.allKeys()) == set(had), f"设置未还原: {sorted(qs.allKeys())}"
 
     print("五页导航 + 帮助页新章节 + 设置页限额卡 PASS")
 

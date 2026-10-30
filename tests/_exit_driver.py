@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
+from _qt_harness import use_temp_data_dir  # noqa: E402
+use_temp_data_dir("exit")   # 测试专属数据目录：绝不往用户真实历史库写
+
 from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 

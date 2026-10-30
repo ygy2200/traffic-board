@@ -14,8 +14,14 @@ import time
 
 class KnownPeers:
     def __init__(self, db_path: str = "") -> None:
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        self.db_path = db_path or os.path.join(base, "TrafficBoard", "known.sqlite")
+        # 优先级：显式参数 > TB_DATA_DIR（测试/便携）> 用户本机数据目录
+        if db_path:
+            self.db_path = db_path
+        else:
+            override = os.environ.get("TB_DATA_DIR")
+            base = override or os.path.join(
+                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "TrafficBoard")
+            self.db_path = os.path.join(base, "known.sqlite")
         self._seen: set = set()
         self._pending: list = []
         self._conn: sqlite3.Connection | None = None

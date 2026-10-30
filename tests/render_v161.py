@@ -6,12 +6,20 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _qt_harness import am_child, hard_exit, run_isolated, shoot, use_temp_data_dir  # noqa: E402
+
+# 本脚本会写用户设置（rank/sort）、也会打开历史库：设置快照/还原交给父进程用
+# reg.exe 在进程外做，数据目录改到临时目录，绝不碰用户真实数据。
+if not am_child() and os.name == "nt":
+    sys.exit(run_isolated(str(Path(__file__).resolve())))
+use_temp_data_dir("v161")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from core.aggregator import AppView, Board, ConnView  # noqa: E402
 from ui.ranklist import RankList  # noqa: E402
-from _qt_harness import hard_exit  # noqa: E402
 
 HERE = Path(__file__).parent
 
@@ -45,21 +53,7 @@ def _fake_board():
 
 
 def _shoot(widget, path):
-    widget.show()
-    widget.repaint()
-    loop = {"done": False}
-
-    def _snap():
-        widget.repaint()
-        assert widget.grab().save(str(path)), f"保存失败: {path}"
-        loop["done"] = True
-        app.quit()
-    from PySide6.QtCore import QTimer
-    QTimer.singleShot(150, _snap)
-    app.exec()
-    assert loop["done"], "截图定时器未触发"
-    print(f"{path.name}  {path.stat().st_size} bytes")
-    widget.hide()
+    shoot(widget, path, app)
 
 
 app = QApplication.instance() or QApplication([])
@@ -105,8 +99,7 @@ print("排序翻转 + 数值列语义 + 离线回落 PASS")
 from PySide6.QtCore import QSettings  # noqa: E402
 
 _qs = QSettings("TrafficBoard", "TrafficBoard")
-_had_sort = _qs.value("rank/sort")
-_qs.remove("rank/sort")          # 隔离：不读用户既有偏好，测完即清（防残留）
+_qs.remove("rank/sort")          # 从默认状态开始测，不读用户既有偏好（还原由父进程负责）
 
 from core.aggregator import Aggregator  # noqa: E402
 from ui.main_window import MainWindow  # noqa: E402
@@ -131,9 +124,7 @@ win.repaint()
 _shoot(win, HERE / "render_v161_main.png")
 win.close()
 app.processEvents()
-_qs.remove("rank/sort")             # 清理测试写入（恢复用户默认）
-if _had_sort is not None:
-    _qs.setValue("rank/sort", _had_sort)
-_qs.sync()
+# rank/sort 的还原不在这儿做：同进程里 MainWindow 自己也有 QSettings 实例，
+# 实例间缓存会互相覆盖（实测留下过脏值），统一由父进程按注册表快照还原。
 print("render_v161 全部通过")
 hard_exit(0)

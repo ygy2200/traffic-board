@@ -5,6 +5,9 @@ from types import SimpleNamespace as NS
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _qt_harness import use_temp_data_dir  # noqa: E402
+use_temp_data_dir("nics")   # 测试专属数据目录：绝不往用户真实历史库写
+
 from core.nics import physical_nics  # noqa: E402
 
 

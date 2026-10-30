@@ -10,6 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from _qt_harness import use_temp_data_dir  # noqa: E402
+use_temp_data_dir("health")   # 测试专属数据目录：绝不往用户真实历史库写
+
 import core.health as health  # noqa: E402
 from core.health import (  # noqa: E402
     SEV_FAIL, SEV_INFO, SEV_OK, SEV_WARN, HealthEngine, HealthItem,

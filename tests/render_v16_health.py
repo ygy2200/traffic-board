@@ -6,6 +6,15 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _qt_harness import am_child, hard_exit, run_isolated, shoot, use_temp_data_dir  # noqa: E402
+
+# 本脚本后半段用真实 Aggregator（会拉起采样线程并往历史库落库）：数据目录换临时目录，
+# 设置的快照/还原交给父进程用 reg.exe 在进程外做
+if not am_child() and os.name == "nt":
+    sys.exit(run_isolated(str(Path(__file__).resolve())))
+use_temp_data_dir("v16h")
 
 from types import SimpleNamespace
 
@@ -16,7 +25,6 @@ from core.health import (  # noqa: E402
     SEV_FAIL, SEV_INFO, SEV_OK, SEV_WARN, HealthItem, HealthReport)
 from core.tun_detect import TunState  # noqa: E402
 from ui.health_page import HealthPage  # noqa: E402
-from _qt_harness import hard_exit  # noqa: E402
 
 HERE = Path(__file__).parent
 
@@ -68,24 +76,11 @@ def main() -> int:
                    fix="玩需要加速器的游戏前先实测；异常时关闭 TUN 或加速器其一"),
     ])
 
-    from PySide6.QtCore import QTimer
-
     def _shoot(name: str, rep: HealthReport) -> None:
-        page.show()
         page._render(rep)
-        # 进事件循环让布局真正激活（离屏/无 exec 场景 layout 不会重算）
-        loop = {"out": HERE / f"render_v16_health_{name}.png", "done": False}
-
-        def _snap():
-            page.repaint()
-            assert page.grab().save(str(loop["out"])), f"保存失败: {loop['out']}"
-            loop["done"] = True
-            app.quit()
-        QTimer.singleShot(150, _snap)
-        app.exec()
-        assert loop["done"], "截图定时器未触发"
-        print(f"render_v16_health_{name}.png  {loop['out'].stat().st_size} bytes")
-        page.hide()
+        # shoot() 里会转圈处理事件（离屏下不处理事件 layout 不会重算），
+        # 但不再嵌套 app.exec()——实测那条路有丢 quit 导致无声挂死的风险
+        shoot(page, HERE / f"render_v16_health_{name}.png", app)
 
     for name, rep in (("ok", ok), ("warn", warn), ("fail", fail)):
         _shoot(name, rep)

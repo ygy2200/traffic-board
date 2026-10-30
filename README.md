@@ -63,7 +63,14 @@ python tests/render_v10_smoke.py  # 离屏渲染冒烟（五页导航 + 退出�
 python tests/render_v161.py       # 离屏渲染验收（排行双模式）
 python tests/render_v162.py       # 离屏渲染验收（总览/配额设置）
 python tests/render_v16_health.py # 离屏渲染验收（体检页三态）
+python tests/render_v163_badge.py # 离屏渲染验收（悬浮条位置跨启动保留）
 ```
+
+跑测试不用先关程序：`tests/_qt_harness.py` 把两个用户态入口都隔离掉了——
+数据目录走 `TB_DATA_DIR`（临时目录，测试不会往你的 30 天历史里写假数据），
+QSettings 由父进程按注册表快照精确还原（进程内"还原"实测会被控件自己的
+QSettings 实例缓存覆盖，曾经抹掉过用户设置）。新增 Qt 冒烟请用
+`run_isolated()` + `use_temp_data_dir()` + `shoot()`，不要再写嵌套 `app.exec()`。
 
 ## 构建与发布
 

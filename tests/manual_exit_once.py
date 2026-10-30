@@ -14,6 +14,9 @@ faulthandler.enable()   # 段错误时打印 Python 回溯，定位崩溃点
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
+from _qt_harness import use_temp_data_dir  # noqa: E402
+use_temp_data_dir("manexit")   # 测试专属数据目录：绝不往用户真实历史库写
+
 from PySide6.QtCore import QTimer          # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
