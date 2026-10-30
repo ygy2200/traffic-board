@@ -12,6 +12,7 @@ from qfluentwidgets import (
 )
 
 from core.tools import get_autostart, set_autostart
+from core.version import VERSION
 
 
 def _exe_path() -> str:
@@ -143,7 +144,7 @@ class SettingsPage(QWidget):
         c5 = QVBoxLayout(card5)
         c5.setContentsMargins(16, 12, 16, 12)
         c5.addWidget(BodyLabel("关于"))
-        about = CaptionLabel("流量看板 Traffic Board v1.6.1 · 开源：github.com/ygy2200/traffic-board\n"
+        about = CaptionLabel(f"流量看板 Traffic Board v{VERSION} · 开源：github.com/ygy2200/traffic-board\n"
                              "数据全部在本机采集与显示，不上传任何内容。")
         about.setStyleSheet("color: rgb(170,170,170);")
         c5.addWidget(about)

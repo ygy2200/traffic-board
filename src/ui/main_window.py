@@ -636,8 +636,16 @@ def _detail_row_vals(cv):
 
 def run_app() -> int:
     app = QApplication(sys.argv)
+    from core.instance import claim, notify_running_instance
+    if notify_running_instance():
+        # 已有实例在跑（多半缩在托盘里）：激活它，本进程安静退出
+        return 0
     agg = Aggregator()
     w = MainWindow(agg)
+    state, srv = claim(w._show_main)
+    if state == "taken":
+        return 0                      # 并发启动里另一实例先抢到
+    w._instance_srv = srv             # 持住引用：server 被 GC 管道就断
     w.show()
     code = app.exec()
     _hard_exit(code)
