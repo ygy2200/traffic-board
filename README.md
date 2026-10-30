@@ -71,9 +71,10 @@ python tests/render_v167_detail_empty.py # 离屏渲染验收（明细表三种�
 python tests/render_v168_small_screen.py # 离屏渲染验收（1366x720 小屏：最小尺寸 + 省略号，喂数据测量）
 python tests/render_v169_infobar_fit.py # 离屏渲染验收（前台提醒条宽度不超窗口，含半屏贴靠）
 python tests/render_v170_settings_fit.py # 离屏渲染验收（设置页极限宽度无横向滚动条，配额行自动折行）
-python tests/render_v171_contrast.py # 真实像素文字对比度闸门（五页逐屏滚动，量 83 处，非离屏）
+python tests/render_v171_contrast.py # 真实像素文字对比度闸门（五页逐屏滚动，量 89 处，非离屏）
 python tests/render_v172_infobar_words.py # 真实像素折行闸门（提醒条不许把路径/URL 劈开，非离屏）
 python tests/render_v173_badge_gate.py # 悬浮速率条闸门（半透明合成后的对比度 + 最长速率串不越界 + 悬浮说明，非离屏）
+python tests/render_v174_focus_chain.py # 键盘焦点链闸门（初始焦点/Tab 链可达/表格不困住 Tab/页签能空格翻页）
 ```
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
@@ -97,7 +98,43 @@ grab 出来的卡片底是 Qt 默认浅灰（qfluentwidgets 的主题背景根�
 两个套件都不 `show()` 窗口，只 `grab()` 位图——实测 windows 平台下不弹窗也能拿到真图。
 对比度套件的前景取「离背景最远的 2% 像素的众数」而不是墨色众数：小字号中文全是抗锯齿边，墨色众数量到的是灰边，
 实测把白字算成 (120,120,120)、对比度直接虚降一半。阈值取 WCAG AA（正文 4.5:1、
-大字 3:1），量的是五页逐屏滚动下所有完整可见的标签（当前 83 处）。
+大字 3:1），量的是五页逐屏滚动下所有完整可见的标签（当前 89 处，帮助页加了键盘那 6 条）。
+
+`render_v174_focus_chain.py` 是唯一**必须** `show()` 的渲染套件，因为 Qt 只给可见窗口设焦点：
+在隐藏窗口上量焦点链会量出一条假链——隐藏时所有子件 `isVisible()` 都是 False，
+Qt 的跳过逻辑只看可见性，于是链路钻进从没上过屏的按钮里（R13 那条"隐藏标题栏按钮吃掉 Tab"
+的猜测就是这么来的，本轮在全新窗口里精确摘掉 `TitleBar`/`FluentWidgetTitleBar` 重测：
+链 11 跳一字不差、最小尺寸不变、标题栏照常跟随宽度，**残留标题栏是无害的**，那条遗留结案）。
+它默认跑 offscreen（show() 也不弹窗，焦点链由 QtWidgets 算、与平台无关），
+`FOCUS_GATE_NATIVE=1` 时改跑 windows 平台核对真实初始焦点——两个平台都过，
+但最小尺寸基线不同（离屏 456x510，本机 DPR=1.25 真平台 457x540），闸门按平台各取一个实测值。
+
+同一轮把键盘这条路的四个真问题修掉了（都是逐跳按真 Tab 键量出来的，不是读代码猜的）：
+① 窗口一打开初始焦点落在标题栏的**最小化按钮**上（qfluentwidgets 把
+最小化→关闭→最大化排在 Tab 链最前），按第一下回车把窗口收进任务栏、第二下缩进托盘，
+看着像程序没了——三个按钮改成 NoFocus，原生 Windows 的窗口按钮本就不参与 Tab；
+出路没被夺走：实测本窗口 HWND 仍带 `WS_SYSMENU`、系统菜单里 `SC_CLOSE`/`SC_MINIMIZE` 都在，
+Alt+F4 与 Alt+空格 照常（`tmp/probe_hwnd_style.py`）。
+② 明细表是只读的，但 `QAbstractItemView` 默认把 Tab 当"下一个单元格"：有行时每按一次 Tab
+只在第 0 行四列里绕圈（0,1→0,2→0,3→0,0…），既到不了别的行也走不出控件——键盘用户被关在里面，
+`setTabKeyNavigation(False)` 之后 Tab 回到"下一个控件"的语义，行内仍用上下方向键。
+③ 导航页签一个都不在链上（`NavigationWidget` 继承 QWidget、默认 NoFocus，库里没写 keyPressEvent），
+键盘根本切不了页；现在 5 个页签都可 Tab、空格/回车都能翻页。
+翻页不是调库里的 `click()` 完成的——它只发 `clicked` 信号，实测 index 纹丝不动，
+真鼠标按下+松开才切页，所以键盘激活走的是一对合成鼠标事件（`tmp/probe_nav_click.py`）。
+④ 页签聚焦原本**一个像素都不变**：库里的悬浮底色分支写死了
+`globalRect.contains(QCursor.pos())`（`navigation_widget.py:200`），只认真鼠标位置，
+手动把 `isEnter` 设 True 实测 0/168 采样点变化——键盘用户是盲操作。
+于是加了 `_FocusRing`：盖在页签上的透明描边子控件，FocusIn 显示、FocusOut 隐藏、Resize 跟随，
+闸门逐点比色确认真的画出来了（离屏 34/168、真平台 57/255，且变化点全部贴边）。
+
+链序也被闸门钉住（两个平台量出来一样）：搜索框第 1 跳 → 明细表第 7 跳 → 5 个页签第 8–12 跳。
+页签排在最后是库的装配顺序决定的（内容区先进窗口），从首页走到页签要按 8 次 Tab——
+这条如实写进帮助页，改它要重写 `focusNextPrevChild`，风险大于收益，暂不动。
+
+`tests/render_v16*.png`、`render_v17*.png` 这些留图**不是基线**：同一份代码连跑两次就差 3.7 万个像素
+（`render_v168_small_screen.py` 实测，逐点最大差 226），是字形亚像素定位的不确定量，没有任何套件读它们。
+以后重跑回归看到它们集体变脏，别当成视觉回归，也别为它们起一个提交。
 
 顺带把"要不要开浅色主题"量清楚了：本机 Windows 处于深色模式，Qt 的基础调色板就是
 `#1e1e1e`，而 `setTheme(Theme.LIGHT)` 只重刷 qfluentwidgets 自己注册的控件，
