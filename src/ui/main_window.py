@@ -7,8 +7,8 @@ import sys
 import time
 
 import psutil
-from PySide6.QtCore import QSettings, QThread, Qt, Signal, QTimer
-from PySide6.QtGui import QColor, QFontMetrics
+from PySide6.QtCore import QEvent, QPoint, QSettings, QThread, Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QFontMetrics, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QPushButton, QTableWidgetItem,
     QVBoxLayout, QWidget, QSplitter, QSizePolicy,
@@ -306,6 +306,30 @@ def _hard_exit(code: int = 0) -> None:
     os._exit(code)
 
 
+class _FocusRing(QWidget):
+    """盖在自绘控件上的一圈键盘焦点描边。
+
+    导航页签是 qfluentwidgets 自绘的 QWidget：它的"悬浮底色"分支写死了
+    `globalRect.contains(QCursor.pos())`，只认真鼠标位置（源码
+    navigation_widget.py:200），所以把 isEnter 手动改成 True 一个像素都不会变——
+    实测聚焦前后逐点比色 0/168 变化。没有焦点框，键盘用户就是盲操作，
+    只能自己画一层（子控件画在父控件自绘之后，鼠标事件全透传）。
+    """
+
+    def __init__(self, owner: QWidget) -> None:
+        super().__init__(owner)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setGeometry(owner.rect())
+        self.hide()
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(120, 190, 255, 235), 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 5, 5)
+
+
 class MainWindow(FluentWindow):
     def __init__(self, agg: Aggregator) -> None:
         super().__init__()
@@ -473,6 +497,79 @@ class MainWindow(FluentWindow):
         # ---- 托盘 + 悬浮速率条 ----
         self._init_tray()
         self._init_badge()
+        self._setup_key_chain()
+
+    # ---- 键盘焦点链 ----
+    def _setup_key_chain(self) -> None:
+        """窗口按钮退出 Tab 链，导航页签反过来补上键盘。
+
+        实测（tmp/probe_focus_chain.py）：qfluentwidgets 的标题栏把
+        最小化→关闭→最大化排在链首，窗口一 show 初始焦点就落在最小化按钮上——
+        键盘用户按第一下回车把窗口收进任务栏，第二下（关闭）把窗口缩进托盘，
+        看着就像程序没了。原生 Windows 的窗口按钮属于非客户区，从来不参与 Tab，
+        关掉它们的焦点也不影响出路：本窗口 HWND 仍带 WS_SYSMENU，Alt+F4 与
+        Alt+空格 系统菜单照常工作（tmp/probe_hwnd_style.py 实测有 SC_CLOSE/SC_MINIMIZE）。
+
+        导航页签是另一个极端：NavigationWidget 继承 QWidget，默认 NoFocus，库里
+        也没写 keyPressEvent，键盘完全摸不到，切页只能靠鼠标。这里给最里层的
+        页签按钮上焦点，并把空格/回车翻译成一对鼠标按下+松开——实测
+        NavigationWidget.click() 只发 clicked 信号、并不会翻页（翻页的接线挂在鼠标
+        事件上，见 tmp/probe_nav_click.py），走库自己那条路才不会漏掉它的细节。
+        聚焦还得看得见：库里的底色分支只认真鼠标位置，于是另盖一圈 _FocusRing。
+        """
+        tb = self.titleBar
+        for btn in (tb.minBtn, tb.maxBtn, tb.closeBtn):
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        # 明细表是只读的，但 QAbstractItemView 默认把 Tab 当"下一个单元格"：实测
+        # 有行时每按一次 Tab 只在第 0 行的四列里绕圈（0,1→0,2→0,3→0,0…），既到不了
+        # 别的行也走不出这个控件——键盘用户一旦 Tab 进来就被关在里面。关掉它，
+        # 让 Tab 回到"跳到下一个控件"的本来语义，行内仍用上下方向键走。
+        self.table.setTabKeyNavigation(False)
+
+        tabs = [w for w in self.navigationInterface.findChildren(QWidget)
+                if getattr(w, "isSelectable", False)
+                and callable(getattr(w, "click", None))]
+        # 外层容器也带着 isSelectable 和 click()（点它是展开/收起），只留最里层那枚
+        # 真正会切页的按钮。Qt 的 isAncestorOf 把"自己"也算进自己的祖先表，
+        # 不加 w is not c 就会把每个候选都判成"有下级"，筛出来是空的。
+        items = [w for w in tabs if not any(w is not c and w.isAncestorOf(c) for c in tabs)]
+        for it in items:
+            it.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            it._focus_ring = _FocusRing(it)
+            it.installEventFilter(self)
+        self._nav_items = items
+
+    @staticmethod
+    def _synth_click(w) -> None:
+        """给控件送一对真的鼠标按下+松开，等价于用户点它一下。"""
+        pos = QPoint(min(8, max(0, w.width() - 2)), min(8, max(0, w.height() - 2)))
+        gp = w.mapToGlobal(pos)
+        lb = Qt.MouseButton.LeftButton
+        none = Qt.KeyboardModifier.NoModifier
+        QApplication.sendEvent(w, QMouseEvent(
+            QEvent.Type.MouseButtonPress, pos, gp, lb, lb, none))
+        QApplication.sendEvent(w, QMouseEvent(
+            QEvent.Type.MouseButtonRelease, pos, gp, lb, Qt.MouseButton.NoButton, none))
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        ring = getattr(obj, "_focus_ring", None)
+        if ring is not None:
+            t = event.type()
+            if t == QEvent.Type.FocusIn:
+                ring.setGeometry(obj.rect())
+                ring.show()
+                ring.raise_()
+            elif t == QEvent.Type.FocusOut:
+                ring.hide()
+            elif t == QEvent.Type.Resize:
+                ring.setGeometry(obj.rect())
+        if (event.type() == QEvent.Type.KeyPress
+                and event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and getattr(obj, "isSelectable", False)):
+            self._synth_click(obj)
+            return True
+        return super().eventFilter(obj, event)
 
     # ---- 托盘 ----
     def _init_tray(self) -> None:
