@@ -144,6 +144,14 @@ def _child() -> int:
     assert "gitl" in _cell(win, 0, 0), _cell(win, 0, 0)
     shoot(win, Path(__file__).parent / "render_v167_detail_empty.png", app, settle_ms=400)
     print("8) 无匹配空态实渲染 PASS")
+
+    # ---- 9) 帮助页要解释这三句空态（界面文案和帮助不能各说各话）----
+    from ui.help_page import _SECTIONS
+    faq = "".join(line for _, items in _SECTIONS for line in items)
+    for phrase in ("已不在当前列表", "没有可见连接", "没有匹配"):
+        assert phrase in faq, f"帮助页没解释空态「{phrase}」"
+    assert _cell(win, 0, 0) and "gitl" in _cell(win, 0, 0)
+    print("9) 帮助页覆盖三种空态 PASS")
     return 0
 
 
