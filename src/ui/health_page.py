@@ -55,6 +55,7 @@ class HealthPage(QWidget):
         top.addWidget(SubtitleLabel("网络体检"))
         top.addStretch(1)
         self.lbl_status = CaptionLabel("进入页面自动体检一次")
+        self.lbl_status.setWordWrap(True)   # 不换行会把整页最小宽度顶到状态文字那么长（R12）
         self.lbl_status.setStyleSheet("color: rgb(160,160,160);")
         top.addWidget(self.lbl_status)
         self.btn_copy = QPushButton("复制报告")
@@ -90,6 +91,7 @@ class HealthPage(QWidget):
         v.addWidget(self.scroll, 1)
 
         self.lbl_mode = CaptionLabel("")
+        self.lbl_mode.setWordWrap(True)     # 同上：数据源那行很长，不换行会顶住窗口最小宽度
         self.lbl_mode.setStyleSheet("color: rgb(140,140,140);")
         v.addWidget(self.lbl_mode)
 

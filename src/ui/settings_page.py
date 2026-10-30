@@ -5,10 +5,11 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QFrame, QVBoxLayout, QWidget
 
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, CardWidget, SpinBox, SwitchButton, SubtitleLabel,
+    BodyLabel, CaptionLabel, CardWidget, ScrollArea, SpinBox, SwitchButton,
+    SubtitleLabel,
 )
 
 from core.tools import get_autostart, set_autostart
@@ -26,27 +27,41 @@ class SettingsPage(QWidget):
         self._settings = QSettings("TrafficBoard", "TrafficBoard")
         self._agg = agg
         self._loading = True
+        # 整页放进滚动区：七张卡的最小高度原本会一路顶到窗口，
+        # 1366x768 的笔记本上窗口最小高度 806 已经大于可用高度，底部直接看不到。
         v = QVBoxLayout(self)
-        v.setContentsMargins(24, 20, 24, 20)
-        v.setSpacing(10)
-        v.addWidget(SubtitleLabel("设置"))
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        self.scroll = ScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.enableTransparentBackground()
+        inner = QWidget(self.scroll)
+        self.scroll.setWidget(inner)
+        v.addWidget(self.scroll, 1)
+
+        iv = QVBoxLayout(inner)
+        iv.setContentsMargins(24, 20, 24, 20)
+        iv.setSpacing(10)
+        iv.addWidget(SubtitleLabel("设置"))
 
         # ---- 开机自启 ----
-        card1 = CardWidget(self)
+        card1 = CardWidget(inner)
         c1 = QVBoxLayout(card1)
         c1.setContentsMargins(16, 12, 16, 12)
         c1.addWidget(BodyLabel("开机自动启动"))
         note = CaptionLabel("写入当前用户的启动项（注册表 HKCU Run），关闭即完全移除。")
+        note.setWordWrap(True)
         note.setStyleSheet("color: rgb(160,160,160);")
         c1.addWidget(note)
         self.sw_autostart = SwitchButton(card1)
         self.sw_autostart.setChecked(get_autostart(_exe_path()))
         self.sw_autostart.checkedChanged.connect(self._on_autostart)
         c1.addWidget(self.sw_autostart)
-        v.addWidget(card1)
+        iv.addWidget(card1)
 
         # ---- 悬浮速率条 ----
-        card2 = CardWidget(self)
+        card2 = CardWidget(inner)
         c2 = QVBoxLayout(card2)
         c2.setContentsMargins(16, 12, 16, 12)
         c2.addWidget(BodyLabel("悬浮速率条"))
@@ -59,12 +74,13 @@ class SettingsPage(QWidget):
         self.sw_topmost.checkedChanged.connect(self._on_topmost)
         c2.addWidget(self.sw_topmost)
         note2 = CaptionLabel("悬浮条可拖动，右键它有锁定位置/显示主界面/退出。")
+        note2.setWordWrap(True)
         note2.setStyleSheet("color: rgb(160,160,160);")
         c2.addWidget(note2)
-        v.addWidget(card2)
+        iv.addWidget(card2)
 
         # ---- 关闭行为 ----
-        card3 = CardWidget(self)
+        card3 = CardWidget(inner)
         c3 = QVBoxLayout(card3)
         c3.setContentsMargins(16, 12, 16, 12)
         c3.addWidget(BodyLabel("关闭主窗口时"))
@@ -73,12 +89,13 @@ class SettingsPage(QWidget):
         self.sw_close_exit.checkedChanged.connect(self._on_close_exit)
         c3.addWidget(self.sw_close_exit)
         note3 = CaptionLabel("关闭此开关：点 × 会最小化到托盘（后台保持监测），从托盘菜单才能退出。")
+        note3.setWordWrap(True)
         note3.setStyleSheet("color: rgb(160,160,160);")
         c3.addWidget(note3)
-        v.addWidget(card3)
+        iv.addWidget(card3)
 
         # ---- 陌生连接提醒 ----
-        card4 = CardWidget(self)
+        card4 = CardWidget(inner)
         c4 = QVBoxLayout(card4)
         c4.setContentsMargins(16, 12, 16, 12)
         c4.addWidget(BodyLabel("陌生连接提醒"))
@@ -86,13 +103,15 @@ class SettingsPage(QWidget):
         self.sw_alert.setChecked(self._settings.value("alert/enabled", "1") in ("1", "true", True))
         self.sw_alert.checkedChanged.connect(self._on_alert)
         c4.addWidget(self.sw_alert)
-        note4 = CaptionLabel("某软件第一次连接某个目标时弹托盘通知（同一软件每小时最多提醒一次）。")
+        note4 = CaptionLabel("某软件第一次连接某个目标时提醒一次（同一软件每小时最多一条，"
+                             "窗口在前台时显示在窗口顶部，否则走托盘）。")
+        note4.setWordWrap(True)
         note4.setStyleSheet("color: rgb(160,160,160);")
         c4.addWidget(note4)
-        v.addWidget(card4)
+        iv.addWidget(card4)
 
         # ---- 数据源 ----
-        card_ds = CardWidget(self)
+        card_ds = CardWidget(inner)
         cds = QVBoxLayout(card_ds)
         cds.setContentsMargins(16, 12, 16, 12)
         cds.addWidget(BodyLabel("数据源"))
@@ -104,18 +123,19 @@ class SettingsPage(QWidget):
         note_ds = CaptionLabel(
             "默认：TUN 开启时直接使用 Clash 内核的连接数据（更快、UDP 明细更全）。\n"
             "勾选后始终使用系统连接表扫描（旧路径，数据不变但更耗资源）。")
+        note_ds.setWordWrap(True)
         note_ds.setStyleSheet("color: rgb(160,160,160);")
         cds.addWidget(note_ds)
-        v.addWidget(card_ds)
+        iv.addWidget(card_ds)
 
         # ---- 月流量上限 ----
-        card_q = CardWidget(self)
+        card_q = CardWidget(inner)
         cq = QVBoxLayout(card_q)
         cq.setContentsMargins(16, 12, 16, 12)
         cq.addWidget(BodyLabel("月流量上限"))
         note_q = CaptionLabel(
             "按计费周期统计「经代理的流量」（不含校园网等本地流量）。"
-            "用到 80% 时托盘预警一次，超限再提醒一次；同一周期不重复打扰。0 = 不限。")
+            "用到 80% 时提醒一次，超限再提醒一次；同一周期不重复打扰。0 = 不限。")
         note_q.setStyleSheet("color: rgb(160,160,160);")
         note_q.setWordWrap(True)
         cq.addWidget(note_q)
@@ -137,19 +157,20 @@ class SettingsPage(QWidget):
         row_q.addWidget(self.sp_reset)
         row_q.addStretch(1)
         cq.addLayout(row_q)
-        v.addWidget(card_q)
+        iv.addWidget(card_q)
 
     # ---- 关于 ----
-        card5 = CardWidget(self)
+        card5 = CardWidget(inner)
         c5 = QVBoxLayout(card5)
         c5.setContentsMargins(16, 12, 16, 12)
         c5.addWidget(BodyLabel("关于"))
         about = CaptionLabel(f"流量看板 Traffic Board v{VERSION} · 开源：github.com/ygy2200/traffic-board\n"
                              "数据全部在本机采集与显示，不上传任何内容。")
+        about.setWordWrap(True)
         about.setStyleSheet("color: rgb(170,170,170);")
         c5.addWidget(about)
-        v.addWidget(card5)
-        v.addStretch(1)
+        iv.addWidget(card5)
+        iv.addStretch(1)
         self._loading = False
 
     # ---- 回调 ----

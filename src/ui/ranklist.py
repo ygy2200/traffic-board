@@ -6,9 +6,10 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QFrame, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QFrame, QSizePolicy,
+                               QVBoxLayout, QWidget)
 from qfluentwidgets import ScrollArea, isDarkTheme
 
 
@@ -39,6 +40,8 @@ class RankRow(QWidget):
                  value: str = "", parent=None) -> None:
         super().__init__(parent)
         self._app = app
+        self._display = app.display
+        self._metric = metric
         self._share = max(0.03, share)
         self._selected = selected
         self._dark = isDarkTheme()   # 构造时缓存，不再每帧查询
@@ -55,10 +58,15 @@ class RankRow(QWidget):
         f = QFont(); f.setPointSizeF(11); f.setBold(True)
         self.lbl_name.setFont(f)
         self.lbl_name.setStyleSheet("color: rgb(245,245,245); background: transparent;")
+        # 名字可以缩到任意宽度（不够就省略号）：否则一行长名字会把整个看板的最小宽度顶死
+        self.lbl_name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_name.setToolTip(app.display)
         self.lbl_metric = QLabel(metric)
         f2 = QFont(); f2.setPointSizeF(8.5)
         self.lbl_metric.setFont(f2)
         self.lbl_metric.setStyleSheet("color: rgb(175,175,175); background: transparent;")
+        self.lbl_metric.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.lbl_metric.setToolTip(metric)
         left.addWidget(self.lbl_name)
         left.addWidget(self.lbl_metric)
         layout.addLayout(left, 1)
@@ -73,6 +81,8 @@ class RankRow(QWidget):
         # 关键：所有子 QLabel 对鼠标透明，点击必然命中 RankRow 自身（修复"点了没反应"）
         for lbl in (self.lbl_name, self.lbl_metric, self.lbl_value):
             lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        for lbl in (self.lbl_name, self.lbl_metric):
+            lbl.installEventFilter(self)
 
     def key(self) -> str:
         return self._app.key
@@ -87,12 +97,42 @@ class RankRow(QWidget):
         if self._selected != selected:
             self._selected = selected
             self.update()
-        if self.lbl_name.text() != app.display:
-            self.lbl_name.setText(app.display)
-        if self.lbl_metric.text() != metric:
-            self.lbl_metric.setText(metric)
+        if self._display != app.display:
+            self._set_display(app.display)
+        if self._metric != metric:
+            self._set_metric(metric)
         if self.lbl_value.text() != value:
             self.lbl_value.setText(value)
+
+    def _set_display(self, display: str) -> None:
+        self._display = display
+        self.lbl_name.setToolTip(display)
+        self._elide(self.lbl_name)
+
+    def _set_metric(self, metric: str) -> None:
+        self._metric = metric
+        self.lbl_metric.setToolTip(metric)
+        self._elide(self.lbl_metric)
+
+    def _elide(self, lbl: QLabel) -> None:
+        """放不下就省略号，整段文字在悬浮提示里——否则行里的长文本会顶死整个看板的最小宽度。"""
+        full = self._display if lbl is self.lbl_name else self._metric
+        avail = lbl.width()
+        txt = full if avail <= 0 else QFontMetrics(lbl.font()).elidedText(
+            full, Qt.TextElideMode.ElideRight, avail)
+        if lbl.text() != txt:
+            lbl.setText(txt)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        # 子标签的最终宽度由行布局在本行 resize 之后才定下来，只看本行的 resizeEvent 会拿到旧值
+        if event.type() == QEvent.Type.Resize and obj in (self.lbl_name, self.lbl_metric):
+            self._elide(obj)
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide(self.lbl_name)
+        self._elide(self.lbl_metric)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)

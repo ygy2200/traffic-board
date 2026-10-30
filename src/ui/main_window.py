@@ -226,11 +226,16 @@ class MainWindow(FluentWindow):
         top.addSpacing(8)
         self.search = SearchLineEdit(page)
         self.search.setPlaceholderText("搜软件 / 网站 / IP")
-        self.search.setFixedWidth(260)
+        # 顶栏挤的时候搜索框先让路（固定 260 会在窄窗口把状态文字压成看不见）
+        self.search.setMinimumWidth(120)
+        self.search.setMaximumWidth(260)
+        self.search.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.search.setClearButtonEnabled(True)
         top.addWidget(self.search)
         top.addStretch(1)
         self.status = CaptionLabel(page)
+        # 状态文本长（● Clash 已连接 v… · TUN · 本次 …），不换行会把窗口最小宽度顶到 348+
+        self.status.setWordWrap(True)
         top.addWidget(self.status)
         v.addLayout(top)
 
@@ -272,6 +277,8 @@ class MainWindow(FluentWindow):
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(4)
         self.detail_title = SubtitleLabel("连接明细")
+        # 空态提示语很长（如"该进程当前没有可见连接…"），不换行会顶死右栏最小宽度
+        self.detail_title.setWordWrap(True)
         rv.addWidget(self.detail_title)
         self.table = TableWidget(right)
         self.table.setColumnCount(4)
