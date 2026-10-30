@@ -705,7 +705,10 @@ class MainWindow(FluentWindow):
             self.status.setTextColor(QColor("#4caf50"), QColor("#4caf50"))
         else:
             self.status.setText(f"● Clash 未连接 · {mode_tag} · {sess}")
-            self.status.setTextColor(QColor(150, 150, 150), QColor(120, 120, 120))
+            # 原来深色下用 (120,120,120)，量到 3.78:1（卡片底 #1e1e1e），
+            # 是全部界面文字里唯一低于 WCAG AA 4.5 的一处——这行是"代理没生效"
+            # 的关键提示，不该比正文更含糊。150 灰量到 5.63:1。
+            self.status.setTextColor(QColor(96, 96, 96), QColor(150, 150, 150))
         self._check_unknown(board)
         self._render()
 

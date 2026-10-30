@@ -71,6 +71,7 @@ python tests/render_v167_detail_empty.py # 离屏渲染验收（明细表三种�
 python tests/render_v168_small_screen.py # 离屏渲染验收（1366x720 小屏：最小尺寸 + 省略号，喂数据测量）
 python tests/render_v169_infobar_fit.py # 离屏渲染验收（前台提醒条宽度不超窗口，含半屏贴靠）
 python tests/render_v170_settings_fit.py # 离屏渲染验收（设置页极限宽度无横向滚动条，配额行自动折行）
+python tests/render_v171_contrast.py # 真实像素文字对比度闸门（五页逐屏滚动，量 83 处，非离屏）
 ```
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
@@ -85,6 +86,20 @@ Qt 套件之间也不要并发跑——它们靠父进程按注册表快照还�
 输入框左对齐。判断依据是滚动区视口宽度而不是这一行自己的宽度——
 按自己的宽度判断会死锁：横向滚动条一出现，布局就把这行撑到它要求的最小宽度，
 于是"放得下"永远成立，滚动条再也收不掉。
+
+`render_v171_contrast.py` 是唯一不跑在离屏平台上的渲染套件，因为它要量的是字色：
+离屏平台没有中文字形（标签区一个墨点都没有，闸门会永远绿灯），而且离屏 grab 出来的
+卡片底是 Qt 默认浅灰，qfluentwidgets 的主题背景根本没画进去。它不 `show()` 窗口，
+只 `grab()` 位图——实测 windows 平台下不弹窗也能拿到真图。前景取「离背景最远的 2%
+像素的众数」而不是墨色众数：小字号中文全是抗锯齿边，墨色众数量到的是灰边，
+实测把白字算成 (120,120,120)、对比度直接虚降一半。阈值取 WCAG AA（正文 4.5:1、
+大字 3:1），量的是五页逐屏滚动下所有完整可见的标签（当前 83 处）。
+
+顺带把"要不要开浅色主题"量清楚了：本机 Windows 处于深色模式，Qt 的基础调色板就是
+`#1e1e1e`，而 `setTheme(Theme.LIGHT)` 只重刷 qfluentwidgets 自己注册的控件，
+不动全局 palette——冷启动浅色实测 71 处文字里 48 处与背景同色（字还在，只是看不见了）。
+所以浅色不是把 `setTheme(Theme.DARK)` 改成 `AUTO` 就能开的，要开得先做全局 palette
+引导 + 把 `src/ui/*.py` 里三十来处写死的深色字面量收进一个调色板模块。
 
 打包后没有控制台，所以"点了没反应"必须变成看得见的话：明细表右键的
 导出 CSV / 起 Wireshark / 断开代理连接三条动作都走 `_toast()`——
