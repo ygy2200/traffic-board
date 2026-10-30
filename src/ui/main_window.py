@@ -210,6 +210,7 @@ class MainWindow(FluentWindow):
         self._detail_vals = []
         self._detail_title_text = ""
         self._alert_ts: dict = {}   # 每进程上次提醒时间（陌生连接限流）
+        self._last_alert_any = 0.0  # 全局上次提醒时间（首启空库时防糊屏）
 
         page = QWidget()
         page.setObjectName("dashPage")
@@ -325,8 +326,9 @@ class MainWindow(FluentWindow):
         self._wave_buf: list = []
         self._current_detail_rows: list = []
         self._tray_exit = False
-        self.alert_enabled = True
         self._settings = QSettings("TrafficBoard", "TrafficBoard")
+        # 提醒开关必须从设置读：写死 True 会让设置页显示"关"、重启后照旧弹
+        self.alert_enabled = self._settings.value("alert/enabled", "1") in ("1", "true", True)
         self.exit_on_close = self._settings.value("close/exit", "0") in ("1", "true", True)
         self.badge_enabled = self._settings.value("badge/enabled", "1") in ("1", "true", True)
         self.badge_topmost = self._settings.value("badge/topmost", "1") in ("1", "true", True)
@@ -404,8 +406,7 @@ class MainWindow(FluentWindow):
         self.worker.set_quota(self.quota_cap_gb, self.quota_reset_day)
 
     def _on_quota_alert(self, title: str, msg: str) -> None:
-        from PySide6.QtWidgets import QSystemTrayIcon
-        self.tray.showMessage(title, msg, QSystemTrayIcon.MessageIcon.Warning, 6000)
+        self._toast("warning", title, msg)
 
     def _show_main(self) -> None:
         self.show()
@@ -649,10 +650,12 @@ class MainWindow(FluentWindow):
         self._render()
 
     def _check_unknown(self, board: Board) -> None:
-        """陌生连接检测：新 (进程, 目标) 对弹托盘通知（同进程每小时限 1 条）。"""
+        """陌生连接检测：新 (进程, 目标) 对提醒一次。
+        限流两层——同进程每小时 1 条 + 全局每分钟最多 1 条。
+        全局那层是给首次启动兜底的：那时 known 库是空的，几十条连接会被同时
+        判成"陌生"，不拦就会用提醒把用户自己的窗口糊住（连接仍照常记账，只是不弹）。"""
         if not getattr(self, "alert_enabled", True):
             return
-        from PySide6.QtWidgets import QSystemTrayIcon
         pairs = set()
         for a in board.apps:
             for c in a.conns:
@@ -664,16 +667,15 @@ class MainWindow(FluentWindow):
         if not new:
             return
         now = time.time()
-        announced = set()
+        if now - self._last_alert_any < 60:
+            return
         for proc, target, _first_seen in new:
-            last = self._alert_ts.get(proc, 0)
-            if now - last < 3600 or proc in announced:
+            if now - self._alert_ts.get(proc, 0) < 3600:
                 continue
-            announced.add(proc)
             self._alert_ts[proc] = now
-            self.tray.showMessage("发现新的网络连接",
-                                  f"{proc} 首次连接：{target}",
-                                  QSystemTrayIcon.MessageIcon.Information, 3000)
+            self._last_alert_any = now
+            self._toast("info", "发现新的网络连接", f"{proc} 首次连接：{target}")
+            break
 
     def _on_pick(self, key: str) -> None:
         # 点击即选中（不做 toggle：误触两次会显得"没反应"）
