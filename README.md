@@ -73,6 +73,7 @@ python tests/render_v169_infobar_fit.py # 离屏渲染验收（前台提醒条�
 python tests/render_v170_settings_fit.py # 离屏渲染验收（设置页极限宽度无横向滚动条，配额行自动折行）
 python tests/render_v171_contrast.py # 真实像素文字对比度闸门（五页逐屏滚动，量 83 处，非离屏）
 python tests/render_v172_infobar_words.py # 真实像素折行闸门（提醒条不许把路径/URL 劈开，非离屏）
+python tests/render_v173_badge_gate.py # 悬浮速率条闸门（半透明合成后的对比度 + 最长速率串不越界 + 悬浮说明，非离屏）
 ```
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
@@ -88,8 +89,8 @@ Qt 套件之间也不要并发跑——它们靠父进程按注册表快照还�
 按自己的宽度判断会死锁：横向滚动条一出现，布局就把这行撑到它要求的最小宽度，
 于是"放得下"永远成立，滚动条再也收不掉。
 
-`render_v171_contrast.py` 和 `render_v172_infobar_words.py` 是不跑在离屏平台上的渲染套件，
-因为它们量的都是"真实像素"：离屏平台没有中文字形（标签区一个墨点都没有，闸门会永远绿灯），
+`render_v171_contrast.py`、`render_v172_infobar_words.py`、`render_v173_badge_gate.py`
+是不跑在离屏平台上的渲染套件，因为它们量的都是"真实像素"：离屏平台没有中文字形（标签区一个墨点都没有，闸门会永远绿灯），
 grab 出来的卡片底是 Qt 默认浅灰（qfluentwidgets 的主题背景根本没画进去），
 而且 ASCII 字符宽度是假的——同一条 60 字符的 URL 离屏量到 840px、真字体只有 377px，
 用假宽度选出来的用例根本碰不到"窗口里放得下却被断了"这条病。
@@ -103,6 +104,16 @@ grab 出来的卡片底是 Qt 默认浅灰（qfluentwidgets 的主题背景根�
 不动全局 palette——冷启动浅色实测 71 处文字里 48 处与背景同色（字还在，只是看不见了）。
 所以浅色不是把 `setTheme(Theme.DARK)` 改成 `AUTO` 就能开的，要开得先做全局 palette
 引导 + 把 `src/ui/*.py` 里三十来处写死的深色字面量收进一个调色板模块。
+
+悬浮速率条是主窗口之外的另一个顶层窗口，而且是 `WA_TranslucentBackground` + `paintEvent` 自绘——
+上面那套「grab 主窗口逐屏量标签」根本扫不到它。它的胶囊底色 alpha=215（84% 不透明），
+桌面会透进来，所以字色对不对必须按**合成后的像素**算：`render_v173_badge_gate.py`
+把悬浮条分别合成到深色/浅色/中灰桌面上量，实测白字对合成底
+15.69 / 9.64 / 11.53:1，全部过 WCAG AA（本轮没有颜色要修，闸门是用来拦以后改一个字节的人）。
+同一个套件还钉两条只在这个控件上成立的契约：最长速率串（`↓ 1023.9GB/s`，86px）
+必须整个画在 210 宽的胶囊里——自绘没有省略号，越界就是数字被裁掉半截；
+以及悬浮说明必须在（它没有标题栏也没有菜单入口，拖动、双击回主界面、右键锁定/退出
+全靠用户猜，本轮补上一句 tooltip）。
 
 打包后没有控制台，所以"点了没反应"必须变成看得见的话：明细表右键的
 导出 CSV / 起 Wireshark / 断开代理连接三条动作都走 `_toast()`——

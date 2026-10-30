@@ -25,7 +25,13 @@ class SpeedBadge(QWidget):
         self._up = "—"
         self._drag_offset: QPoint | None = None
         self._locked = False
-        self._dark = True
+        # 悬浮条没有标题栏、没有任何入口提示：拖动、双击回主界面、右键锁定/退出
+        # 全靠用户猜。补一句悬浮说明（成本一行，漏掉的是全部可发现性）。
+        self.setToolTip(
+            "实时速率悬浮条：↓ 下行 / ↑ 上行\n"
+            "按住拖动可换位置（位置会记住）\n"
+            "双击打开主界面 · 右键锁定位置或退出"
+        )
         self._settings = QSettings("TrafficBoard", "TrafficBoard")
         self._restore_or_default_pos()
 
