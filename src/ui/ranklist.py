@@ -33,6 +33,36 @@ def _fmt_rate(v: float) -> str:
     return f"{v:.1f}GB/s"
 
 
+def match_app(app, keyword: str) -> tuple[bool, bool, list]:
+    """搜索口径的唯一实现：(是否命中, 是否软件名命中, 命中的连接)。
+
+    软件名/进程名命中时，它下面所有连接都算命中（否则搜「Chrome」会得到
+    一行结果 + 空明细）；否则按连接目标（域名/IP:端口）逐条匹配。
+    """
+    kw = keyword.strip().lower()
+    if not kw:
+        return True, True, []
+    name_hit = kw in app.display.lower() or kw in app.proc_name.lower()
+    hits = [c for c in app.conns if kw in c.target.lower()]
+    return (name_hit or bool(hits)), name_hit, hits
+
+
+def arrange_apps(apps, keyword: str, metric_mode: str, sort_mode: str = "cum"):
+    """过滤 + 排序。render 与主窗口的「搜索自动选中第一条」共用同一口径。"""
+    kw = keyword.strip().lower()
+    apps = [a for a in apps if match_app(a, kw)[0]]
+    # 速率榜仅在 Clash 在线（有字节数据源）时生效；离线时速率全 0，
+    # 强行按速率排只会得到乱序，回落连接数排序
+    rate_mode = sort_mode == "rate" and metric_mode == "bytes"
+    if metric_mode == "bytes" and not rate_mode:
+        apps = sorted(apps, key=lambda a: -(a.download + a.upload))
+    elif rate_mode:
+        apps = sorted(apps, key=lambda a: -(a.rate_down + a.rate_up))
+    else:
+        apps = sorted(apps, key=lambda a: -len(a.conns))
+    return apps, rate_mode
+
+
 class RankRow(QWidget):
     clicked_key = Signal(str)
 
@@ -200,19 +230,12 @@ class RankList(QWidget):
         - rate：数值=当前速率（EMA 平滑），副行=累计字节 + 连接数
         """
         kw = keyword.strip().lower()
-        apps = [a for a in apps if not kw or kw in a.display.lower() or kw in a.proc_name.lower()
-                or any(kw in c.target.lower() for c in a.conns)]
-        # 速率榜仅在 Clash 在线（有字节数据源）时生效；离线时速率全 0，
-        # 强行按速率排只会得到乱序，回落连接数排序
-        rate_mode = sort_mode == "rate" and metric_mode == "bytes"
-        if metric_mode == "bytes" and not rate_mode:
-            apps = sorted(apps, key=lambda a: -(a.download + a.upload))
-            shares = self._shares(apps, key=lambda a: a.download + a.upload)
-        elif rate_mode:
-            apps = sorted(apps, key=lambda a: -(a.rate_down + a.rate_up))
+        apps, rate_mode = arrange_apps(apps, kw, metric_mode, sort_mode)
+        if rate_mode:
             shares = self._shares(apps, key=lambda a: a.rate_down + a.rate_up)
+        elif metric_mode == "bytes":
+            shares = self._shares(apps, key=lambda a: a.download + a.upload)
         else:
-            apps = sorted(apps, key=lambda a: -len(a.conns))
             shares = self._shares(apps, key=lambda a: len(a.conns))
 
         # ---- 差集：删除消失的行 ----
@@ -226,7 +249,14 @@ class RankList(QWidget):
         # ---- 复用/创建 + 增量更新 ----
         target_widgets = []
         for a in apps:
-            if rate_mode:
+            _, name_hit, hits = match_app(a, kw)
+            if kw and not name_hit:
+                # 只因为连接目标才上榜：行里必须说清是几条里命中几条，
+                # 否则「代理 8 · 直连 3」和右侧只剩 1 条的明细对不上
+                metric = f"匹配 {len(hits)} 条 · 共 {len(a.conns)} 条"
+                value = (f"↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
+                         if (a.download or a.upload) else f"{len(a.conns)} 条")
+            elif rate_mode:
                 metric = (f"累计 ↓{_fmt_bytes(a.download)} ↑{_fmt_bytes(a.upload)}"
                           f" · 代理 {a.proxy_count} · 直连 {a.direct_count}")
                 if a.rate_down or a.rate_up:
@@ -274,7 +304,10 @@ class RankList(QWidget):
             return
         if text is not None:
             self._hint = QLabel(text)
-            self._hint.setStyleSheet("color: gray; padding: 12px; background: transparent;")
+            # gray(128) 在 #1e1e1e 卡片上只有约 4.1:1，低于 WCAG AA 小字 4.5；
+            # 150 灰实测 5.6:1（与状态栏未连接那行同一取值）
+            self._hint.setStyleSheet(
+                "color: rgb(150,150,150); padding: 12px; background: transparent;")
             self.v.insertWidget(0, self._hint)
 
     @staticmethod

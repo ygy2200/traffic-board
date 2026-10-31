@@ -114,7 +114,10 @@ def _child() -> int:
     app.processEvents()
     assert win.table.rowCount() == 1, win.table.rowCount()
     tip = _cell(win, 0, 0)
-    assert "zzz" in tip and "共 2 条" in tip and "清空搜索" in tip, tip
+    # R27 起搜索是全局过滤：一条软件都不匹配时直接说全局无结果，
+    # 不再拿「Chrome 共 2 条」这种旧选中项的上下文绕人
+    assert "zzz" in tip and "清空搜索" in tip, tip
+    assert "没有软件或连接匹配" in tip, tip
     assert win._current_detail_rows == []
     print("5) 无匹配空态带关键词与出路 PASS")
 

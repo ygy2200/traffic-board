@@ -24,7 +24,7 @@ from core.aggregator import Aggregator, Board, CHANNEL_LABEL
 from core.domains_cn import annotate
 from core.nics import physical_nics
 from ui.wavegraph import WaveGraph
-from ui.ranklist import RankList, _fmt_bytes
+from ui.ranklist import RankList, _fmt_bytes, arrange_apps, match_app
 
 
 _WIDE_START = 0x2E80        # 这个码位之后基本是中日韩字与全角标点，可逐字断行
@@ -342,6 +342,17 @@ class _FocusRing(QWidget):
         p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 5, 5)
 
 
+class _SearchBox(SearchLineEdit):
+    """搜索框：Esc 清空（qfluentwidgets 原版不处理 Esc，实测按了没反应）。"""
+
+    def keyPressEvent(self, e) -> None:  # noqa: N802
+        if e.key() == Qt.Key.Key_Escape and self.text():
+            self.clear()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+
 class MainWindow(FluentWindow):
     def __init__(self, agg: Aggregator, start_worker: bool = True) -> None:
         super().__init__()
@@ -379,8 +390,9 @@ class MainWindow(FluentWindow):
         f = title.font(); f.setPointSizeF(13); f.setBold(True); title.setFont(f)
         top.addWidget(title)
         top.addSpacing(8)
-        self.search = SearchLineEdit(page)
+        self.search = _SearchBox(page)
         self.search.setPlaceholderText("搜软件 / 网站 / IP")
+        self.search.setToolTip("搜软件 / 网站 / IP（Ctrl+F 聚焦，Esc 清空）")
         # 顶栏挤的时候搜索框先让路（固定 260 会在窄窗口把状态文字压成看不见）
         self.search.setMinimumWidth(120)
         self.search.setMaximumWidth(260)
@@ -461,6 +473,7 @@ class MainWindow(FluentWindow):
 
         self.rank.row_clicked.connect(self._on_pick)
         self.search.textChanged.connect(self._render)
+        self.search.returnPressed.connect(self._confirm_search)
 
         # ---- 帮助页 ----
         from ui.help_page import HelpPage
@@ -573,6 +586,10 @@ class MainWindow(FluentWindow):
             self._page_shortcuts.append(self._bind_page_key(f"Ctrl+{i + 1}", i=i))
         self._page_shortcuts.append(self._bind_page_key("Ctrl+Tab", step=1))
         self._page_shortcuts.append(self._bind_page_key("Ctrl+Shift+Tab", step=-1))
+        # Ctrl+F 单独放：它不属于「切页」，也不参与切页快捷键的计数
+        self._search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        self._search_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._search_shortcut.activated.connect(self._focus_search)
 
     def _bind_page_key(self, seq: str, i: int | None = None, step: int = 0) -> QShortcut:
         sc = QShortcut(QKeySequence(seq), self)
@@ -593,6 +610,25 @@ class MainWindow(FluentWindow):
     def go_home(self) -> None:
         """Esc（设置页内）回流量首页。不走清空搜索/关窗，避免误伤输入中的内容。"""
         self.switchTo(self.stackedWidget.widget(0))
+
+    def _focus_search(self) -> None:
+        """Ctrl+F：从任何页回到流量首页并把光标放进搜索框，已有内容全选。"""
+        if self.stackedWidget.currentIndex() != 0:
+            self._switch_page(0)
+        self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.search.selectAll()
+
+    def _confirm_search(self) -> None:
+        """搜索框回车：选中第一条结果并进入明细，键盘用户不必再去摸鼠标。"""
+        visible = arrange_apps(self._board.apps, self.search.text(),
+                               self._metric_mode, self._rank_sort)[0]
+        if not visible:
+            return
+        self._selected_key = visible[0].key
+        self._render()
+        if self._current_detail_rows:
+            self.table.setCurrentCell(0, 0)
+            self.table.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     @staticmethod
     def _synth_click(w) -> None:
@@ -976,8 +1012,17 @@ class MainWindow(FluentWindow):
 
     def _render(self) -> None:
         b = self._board
+        kw = self.search.text().strip()
+        if kw:
+            # 搜索把选中项过滤掉时，让明细跟到第一条结果——否则会出现
+            # 「左边只剩微信、右边还写着 Chrome 的连接（0 条）」的错位。
+            # 一条结果都没有时不改选中：清空搜索后原选中项还要回来。
+            visible = arrange_apps(b.apps, kw, self._metric_mode, self._rank_sort)[0]
+            keys = {a.key for a in visible}
+            if visible and self._selected_key not in keys:
+                self._selected_key = visible[0].key
         self.rank.render(b.apps, self._metric_mode, self._selected_key,
-                         self.search.text(), sort_mode=self._rank_sort)
+                         kw, sort_mode=self._rank_sort)
         self._render_detail()
         self.page_health.set_mode(b.data_mode, b.tun_state)
 
@@ -1007,6 +1052,13 @@ class MainWindow(FluentWindow):
         b = self._board
         app = next((a for a in b.apps if a.key == self._selected_key), None)
         kw = self.search.text().strip().lower()
+        visible = arrange_apps(b.apps, kw, self._metric_mode, self._rank_sort)[0] if kw else []
+        if kw and not visible:
+            self._detail_placeholder(
+                "连接明细",
+                f"没有软件或连接匹配「{self.search.text().strip()}」"
+                "（清空搜索框看全部）")
+            return
         if app is None:
             if not self._selected_key:
                 self._detail_placeholder("连接明细", "点击左侧任一软件，查看它的连接明细")
@@ -1017,10 +1069,14 @@ class MainWindow(FluentWindow):
                     "点击左侧其他软件继续看")
             return
 
+        _, name_hit, hits = match_app(app, kw)
+        rows = list(app.conns) if name_hit else hits
         title = f"{app.display} 的连接（{len(app.conns)} 条）"
-        rows = [cv for cv in app.conns if not kw or kw in cv.target.lower()]
+        if kw and not name_hit:
+            title = (f"{app.display} 的连接"
+                     f"（匹配 {len(rows)} / 共 {len(app.conns)} 条）")
         if not rows:
-            if kw:
+            if kw and not name_hit:
                 tip = (f"没有匹配「{self.search.text().strip()}」的连接"
                        f"（共 {len(app.conns)} 条，清空搜索框看全部）")
             else:

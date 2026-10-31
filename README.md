@@ -81,6 +81,7 @@ python tests/render_v173_badge_gate.py # 悬浮速率条闸门（半透明合成
 python tests/render_v174_focus_chain.py # 键盘闸门（初始焦点/Tab 链可达/表格不困住 Tab/页签空格翻页/Ctrl+1..5 与 Ctrl+Tab 切页）
 python tests/render_v175_isolation.py # 测试隔离运行时证据：start_worker=False 时 PollWorker 未运行且 stop/wait/set_quota 安全
 python tests/render_v176_settings_keys.py # 设置页键盘闸门：六个开关可按顺序 Tab、空格/回车拨动、聚焦描边、Esc 回首页
+python tests/render_v177_search.py # 搜索闸门：软件名/目标/IP 两种命中口径、选中项跟随、Esc/Ctrl+F/回车、空态
 ```
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
@@ -178,6 +179,13 @@ Tab 链按卡片阅读顺序钉死，滚动区/滚动条全部 NoFocus，Esc 回
 缩成 `On` 后把设置页顶出 9px 横向滚动，改成「固定图层（始终置顶）」并把解释挪进卡片说明。
 `scripts/test_all.py` 也顺手补了控制台 `errors="replace"`——子进程输出带 emoji 时 runner 自己会崩，
 把测试失败伪装成工具故障。
+
+R27 把搜索的三处口径拧成一处（`ranklist.match_app` / `arrange_apps`）：软件名命中→该软件全部连接、
+目标（域名/IP:端口）命中→只显示命中的连接，排行副行写「匹配 N 条 · 共 M 条」、明细标题写
+「匹配 N / 共 M 条」。改之前搜软件名得到一行排行 + 空明细（明细只按目标过滤），选中项被搜索过滤掉后
+右侧仍显示旧软件。现在搜索把选中项过滤掉时会自动跳到第一条结果；Esc 清空、Ctrl+F 回首页聚焦并全选、
+回车选中第一条并把焦点送进明细。排行空态从 `gray`(约 4.1:1) 改成 150 灰（约 5.6:1）。
+`render_v177_search.py` 八步钉住这些行为，含无结果回车不抢焦点。
 
 同一轮把 `_ToastBar` 里那个写死的 154 换成实测：图标+边距+关闭按钮那一圈按库的常数几何是 102
 （iconWidget 36 + closeButton 36 + 外边距 6+6 + 文本内边距 1 + addSpacing(12) + spacing 5），
