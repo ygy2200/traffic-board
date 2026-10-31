@@ -490,6 +490,7 @@ class MainWindow(FluentWindow):
         # ---- 历史页 ----
         from ui.history_page import HistoryPage
         self.page_history = HistoryPage(self.agg.history)
+        self.page_history.exported.connect(self._on_history_export)
         self.addSubInterface(self.page_history, FluentIcon.HISTORY, "历史")
         self._hist_timer = QTimer(self)
         self._hist_timer.timeout.connect(self.page_history.refresh)
@@ -868,6 +869,11 @@ class MainWindow(FluentWindow):
                                                   "CSV (*.csv)")
             if path:
                 self._export_csv(path)
+
+    def _on_history_export(self, kind: str, msg: str) -> None:
+        """历史页导出回执走和明细导出同一条通道：前台 InfoBar / 托盘气泡。"""
+        title = {"success": "已导出历史", "error": "历史导出失败"}.get(kind, "历史导出")
+        self._toast(kind, title, msg)
 
     # ------------------------------------------------------------ 动作与回执
     def _toast(self, kind: str, title: str, content: str) -> None:

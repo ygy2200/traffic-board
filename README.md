@@ -82,6 +82,7 @@ python tests/render_v174_focus_chain.py # 键盘闸门（初始焦点/Tab 链可
 python tests/render_v175_isolation.py # 测试隔离运行时证据：start_worker=False 时 PollWorker 未运行且 stop/wait/set_quota 安全
 python tests/render_v176_settings_keys.py # 设置页键盘闸门：六个开关可按顺序 Tab、空格/回车拨动、聚焦描边、Esc 回首页
 python tests/render_v177_search.py # 搜索闸门：软件名/目标/IP 两种命中口径、选中项跟随、Esc/Ctrl+F/回车、空态
+python tests/render_v178_history_export.py # 历史页闸门：CSV 表头/行数/BOM/范围过滤/空导出不建文件/键盘导出
 ```
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
@@ -186,6 +187,16 @@ R27 把搜索的三处口径拧成一处（`ranklist.match_app` / `arrange_apps`
 右侧仍显示旧软件。现在搜索把选中项过滤掉时会自动跳到第一条结果；Esc 清空、Ctrl+F 回首页聚焦并全选、
 回车选中第一条并把焦点送进明细。排行空态从 `gray`(约 4.1:1) 改成 150 灰（约 5.6:1）。
 `render_v177_search.py` 八步钉住这些行为，含无结果回车不抢焦点。
+
+R28 给历史页补了「导出 CSV」（总览卡片右侧）：把当前范围（24 小时 / 7 天）的本机分钟流量与软件代理流量导成
+带 BOM 的 CSV（Excel 直接打开，中文表头与软件名不乱码），先写临时文件再 `os.replace`，
+中途失败不毁上一次的同名文件；范围里没有记录时连保存对话框都不弹，只提示「每满 1 分钟记一条，
+先运行一会儿」。空态文案跟着范围走（24 小时 / 7 天各说各的，软件排行说明代理流量为什么需要 Clash）；
+进程名是外部输入，`= + - @` 开头的单元格会加 `'` 前缀，避免 Excel 当公式执行。
+导出按钮可 Tab、空格触发，成功/失败回执走窗口 InfoBar（收进托盘时退回气泡），
+写明行数与落盘路径，不额外占页面高度。`render_v178_history_export.py` 八步覆盖
+表头/行数/BOM/中文软件名/范围过滤/空导出不建文件不毁旧文件/键盘导出/主窗口回执。
+（明细表右键的「导出 CSV」是当前连接快照，历史页这份是分钟级时间序列，两者用途不同。）
 
 同一轮把 `_ToastBar` 里那个写死的 154 换成实测：图标+边距+关闭按钮那一圈按库的常数几何是 102
 （iconWidget 36 + closeButton 36 + 外边距 6+6 + 文本内边距 1 + addSpacing(12) + spacing 5），

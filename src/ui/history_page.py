@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget, QSizePolicy
+from PySide6.QtWidgets import (
+    QFileDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget, QSizePolicy,
+)
 
 from qfluentwidgets import (
-    BodyLabel, CaptionLabel, PillPushButton, SubtitleLabel, CardWidget,
+    BodyLabel, CaptionLabel, PillPushButton, PushButton, SubtitleLabel, CardWidget,
 )
 
 from core.history import HistoryStore
+
+
+def default_csv_path(now: float | None = None) -> str:
+    """默认导出到「下载」或用户目录，文件名带时间，避免连续导出互相覆盖。"""
+    ts = time.strftime("%Y%m%d-%H%M", time.localtime(time.time() if now is None else now))
+    downloads = Path.home() / "Downloads"
+    base = downloads if downloads.is_dir() else Path.home()
+    return str(base / f"流量看板历史-{ts}.csv")
 
 
 def _fmt(n: float) -> str:
@@ -29,7 +40,11 @@ class BarChart(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._bars: list = []   # [(label, down, up)]
+        self._empty_text = "暂无历史数据（程序运行满 1 分钟后开始统计）"
         self.setMinimumHeight(220)
+
+    def set_empty_text(self, text: str) -> None:
+        self._empty_text = text
 
     def set_data(self, bars: list) -> None:
         self._bars = bars
@@ -42,15 +57,16 @@ class BarChart(QWidget):
         pad_l, pad_b, pad_t = 8, 22, 14
         plot_h = h - pad_b - pad_t
         if not self._bars:
-            p.setPen(QColor(140, 140, 140))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "暂无历史数据（软件运行时自动积累）")
+            p.setPen(QColor(150, 150, 150))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                       self._empty_text)
             return
         peak = max(max(d for _, d, _ in self._bars), max(u for _, _, u in self._bars), 1.0)
         # 网格 + Y 刻度
         p.setPen(QPen(QColor(255, 255, 255, 16), 1))
         for i in range(1, 4):
             p.drawLine(pad_l, int(pad_t + plot_h * i / 4), w - 50, int(pad_t + plot_h * i / 4))
-        p.setPen(QColor(150, 150, 150))
+        p.setPen(QColor(170, 170, 170))
         f = QFont(self.font()); f.setPointSizeF(7.5)
         p.setFont(f)
         p.drawText(w - 46, pad_t + 10, _fmt(peak))
@@ -71,13 +87,17 @@ class BarChart(QWidget):
             p.drawRoundedRect(QRectF(cx - half - 1, base - hd, half, hd), 2, 2)
             p.setBrush(QColor(33, 150, 243, 200))
             p.drawRoundedRect(QRectF(cx + 1, base - hu, half, hu), 2, 2)
-            p.setPen(QColor(150, 150, 150))
+            p.setPen(QColor(170, 170, 170))
             p.setFont(f_label)
             p.drawText(int(cx - slot / 2), h - 8, int(slot * 2), 14,
                        Qt.AlignmentFlag.AlignCenter, label)
 
 
 class HistoryPage(QWidget):
+    # ("success" | "error" | "info", 一句话说明)：反馈走窗口 InfoBar/托盘气泡，
+    # 不占页面纵向空间——历史页的图表已经够高，再加一行说明会把最小窗口顶到 532。
+    exported = Signal(str, str)
+
     def __init__(self, store: HistoryStore, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("historyPage")
@@ -117,9 +137,15 @@ class HistoryPage(QWidget):
             val.setFont(f)
             tile.addWidget(t)
             tile.addWidget(val)
-            sv.addLayout(tile)
+            sv.addLayout(tile, 1)
             self._sum_labels[key] = val
+        self.btn_export = PushButton("导出 CSV")
+        self.btn_export.setToolTip(
+            "导出当前范围的本机分钟流量与软件代理流量（Excel 可直接打开）")
+        self.btn_export.clicked.connect(self._on_export)
+        sv.addWidget(self.btn_export, 0, Qt.AlignmentFlag.AlignVCenter)
         v.addWidget(self.summary_card)
+        QWidget.setTabOrder(self.btn_7d, self.btn_export)
 
         self.chart = BarChart(self)
         self.chart.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -150,15 +176,49 @@ class HistoryPage(QWidget):
         self.btn_7d.setChecked(r == "7d")
         self.refresh()
 
+    def _range_since(self, now: float) -> int:
+        return int(now - (86400 if self._range == "24h" else 7 * 86400))
+
+    def _on_export(self) -> None:
+        if not self.store.has_data_since(self._range_since(time.time())):
+            self.exported.emit(
+                "info", "这个范围还没有记录可导出（每满 1 分钟记一条，先运行一会儿再试）")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出历史流量", default_csv_path(), "CSV 文件 (*.csv)")
+        if path:
+            self._export_to(path)
+
+    def _export_to(self, path: str) -> bool:
+        """真正写文件并通过 exported 汇报；空范围不建文件，返回 False。"""
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+        try:
+            n_total, n_app = self.store.export_csv(self._range_since(time.time()), path)
+        except OSError as e:
+            self.exported.emit("error", f"导出失败：{e}")
+            return False
+        if not n_total and not n_app:
+            self.exported.emit(
+                "info", "这个范围还没有记录可导出（每满 1 分钟记一条，先运行一会儿再试）")
+            return False
+        self.exported.emit(
+            "success", f"已导出 {n_total + n_app} 行（本机 {n_total} + 软件 {n_app}）→ {path}")
+        return True
+
     def refresh(self) -> None:
         now = time.time()
         self._refresh_summary(now)
+        since = self._range_since(now)
         if self._range == "24h":
-            since, bucket = now - 86400, 3600
+            bucket = 3600
             fmt_ts = lambda ts: time.strftime("%H:00", time.localtime(ts))
+            self.chart.set_empty_text(
+                "最近 24 小时还没有记录（每满 1 分钟记一条，运行满 1 分钟后出现）")
         else:
-            since, bucket = now - 7 * 86400, 86400
+            bucket = 86400
             fmt_ts = lambda ts: time.strftime("%m-%d", time.localtime(ts))
+            self.chart.set_empty_text("最近 7 天还没有记录（每满 1 分钟记一条）")
         rows = self.store.query_total_buckets(since, bucket)
         bars = [(fmt_ts(ts), down, up) for ts, up, down in rows]
         self.chart.set_data(bars)
@@ -170,7 +230,8 @@ class HistoryPage(QWidget):
                 lines.append(f"· {app}    ↓{_fmt(down)}  ↑{_fmt(up)}")
             self.rank_area.setText("\n".join(lines))
         else:
-            self.rank_area.setText("积累中…（软件运行时每分钟记录一次；代理流量需要 Clash 在线）")
+            self.rank_area.setText(
+                "还没有软件流量记录：本机流量见上方柱状图；软件代理流量需要 Clash 在线才会记录。")
 
     def _refresh_summary(self, now: float) -> None:
         """今日（本地 0 点起）/ 本周（周一 0 点起）/ 本月（自然月 1 号起）。"""

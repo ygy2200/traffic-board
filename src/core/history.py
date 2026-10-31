@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import csv
 import os
 import sqlite3
 import threading
@@ -25,6 +26,13 @@ def default_db_path() -> str:
 # 一分钟 1 PB 物理上不可能（100Gbps 线速约 0.75 GB/min），超过即坏读数。
 # 不夹紧到 int64 上限是因为 SUM() 会在查询端溢出：存进来的值必须留出聚合余量。
 _MAX_BYTES = 10 ** 15
+
+
+def _csv_safe(text: str) -> str:
+    """Excel 会把 = + - @ 开头的单元格当公式执行；进程名是外部输入，
+    导出前加一个 ' 前缀（Excel 显示时不会露出这个引号）。"""
+    s = str(text)
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
 
 
 def _u64(v) -> int:
@@ -183,6 +191,41 @@ class HistoryStore:
             "SELECT app, SUM(up), SUM(down), MAX(conns) FROM per_min"
             " WHERE ts >= ? GROUP BY app ORDER BY SUM(up)+SUM(down) DESC LIMIT ?",
             (int(since_ts), int(top)), many=True)
+
+    def has_data_since(self, since_ts: int) -> bool:
+        """该范围有没有任何记录。有数据才弹保存对话框，空范围直接给提示。"""
+        row = self._read(
+            "SELECT EXISTS(SELECT 1 FROM totals_min WHERE ts >= ?)"
+            " OR EXISTS(SELECT 1 FROM per_min WHERE ts >= ?)",
+            (int(since_ts), int(since_ts)), many=False)
+        return bool(row and row[0])
+
+    def export_csv(self, since_ts: int, path: str) -> tuple:
+        """导出 since_ts 起的本机分钟流量与软件代理流量，返回 (本机行数, 软件行数)。
+
+        没有数据时返回 (0, 0) 且不建文件——空 CSV 只会让用户以为导出成功却看不到东西。
+        先写临时文件再 os.replace：导出中途失败不会把上一次的同名文件毁掉。
+        utf-8-sig 让 Excel 直接认出中文表头（不带 BOM 会乱码）。"""
+        totals = self._read(
+            "SELECT ts, up, down FROM totals_min WHERE ts >= ? ORDER BY ts",
+            (int(since_ts),), many=True) or []
+        per_app = self._read(
+            "SELECT ts, app, up, down, conns FROM per_min WHERE ts >= ? ORDER BY ts, app",
+            (int(since_ts),), many=True) or []
+        if not totals and not per_app:
+            return 0, 0
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["类型", "时间", "软件", "上行字节", "下行字节", "连接数"])
+            for ts, up, down in totals:
+                w.writerow(["本机", time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)),
+                            "", int(up or 0), int(down or 0), ""])
+            for ts, app, up, down, conns in per_app:
+                w.writerow(["软件", time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)),
+                            _csv_safe(app), int(up or 0), int(down or 0), int(conns or 0)])
+        os.replace(tmp, path)
+        return len(totals), len(per_app)
 
     def close(self) -> None:
         with self._lock:
