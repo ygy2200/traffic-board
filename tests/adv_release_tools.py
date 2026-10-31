@@ -108,6 +108,18 @@ def test_zip_file_names_skips_dirs():
         "同样内容因是否写目录条目而数出不同个数——这就是 v1.6.4 那个假警报"
 
 
+def test_zip_has_exe():
+    d = Path(tempfile.mkdtemp())
+    good, bad = d / "good.zip", d / "bad.zip"
+    with zipfile.ZipFile(good, "w") as z:
+        z.writestr("TrafficBoard/TrafficBoard.exe", b"MZ")
+        z.writestr("TrafficBoard/_internal/x.dll", b"x")
+    with zipfile.ZipFile(bad, "w") as z:
+        z.writestr("TrafficBoard/readme.txt", b"x")
+    assert tbbuild.zip_has_exe(good)
+    assert not tbbuild.zip_has_exe(bad), "没有 exe 的包不能算发布包"
+
+
 # ---- 5: 产物版本身份 ----
 def test_exe_version_reads_from_pyz():
     exe = ROOT / "out" / tbbuild.repo_version() / "TrafficBoard" / "TrafficBoard.exe"
@@ -186,6 +198,19 @@ def test_release_notes_default_resolves_to_archive():
     assert "arguments are required" not in out, f"--notes 还是必填：{out[-300:]}"
     assert "docs" in out and "9.9.9.md" in out, f"报错里要看得见默认路径：{out[-300:]}"
 
+
+
+def test_release_dry_run_never_takes_token():
+    """dry-run 必须走完本地预检就说停：不取 token、不联网、不建 Release。"""
+    ver = tbbuild.repo_version()
+    r = _run([sys.executable, str(ROOT / "scripts" / "release.py"),
+              "--tag", f"v{ver}", "--dry-run"], timeout=180)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out[-600:]
+    assert "DRY-RUN" in out and "本地预检全过" in out, out[-600:]
+    assert "token len=" not in out, "dry-run 把 token 取了——预检顺序又反了"
+    assert "建 Release" not in out, "dry-run 不该走到网络步骤"
+    assert "TrafficBoard/TrafficBoard.exe" in out, "预检报告里看不见 zip 成员检查"
 
 
 def test_package_check_reports_the_invariants():

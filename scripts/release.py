@@ -47,6 +47,8 @@ def main() -> int:
                     help="Release 正文（markdown），默认 docs/releases/<版本>.md")
     ap.add_argument("--zip", type=Path, default=None)
     ap.add_argument("--title", default=None, help="Release 标题，默认 Traffic Board <tag>")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="只做本地预检并打印发布计划：不取 token、不联网、不建 Release")
     a = ap.parse_args()
 
     err = tbbuild.check_tag(a.tag)
@@ -66,16 +68,33 @@ def main() -> int:
     if tbbuild.repo_version() != ver:
         return (f"要发的是 {ver}，但 src/core/version.py 写的是 {tbbuild.repo_version()}"
                 "——版本号和发布对象对不上")
+    if not tbbuild.zip_has_exe(zip_path):
+        return f"zip 里没有 TrafficBoard/TrafficBoard.exe：{zip_path.name} 不是可用的发布包"
+    exe = ROOT / "out" / ver / "TrafficBoard" / "TrafficBoard.exe"
+    if exe.is_file():
+        got = tbbuild.exe_version(exe)
+        if got != ver:
+            return f"out/{ver} 里的 exe 自证版本是 {got}，与 tag {a.tag} 对不上"
+        exe_msg = f"out/{ver} 的 exe 自证 {got}"
+    else:
+        exe_msg = f"没有 out/{ver} 的 exe 可比对（只校验 zip 成员）"
+
+    data = zip_path.read_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    print(f"0) 本地包 {zip_path.name} size={len(data)} sha256={sha} 文件条目={len(tbbuild.zip_file_names(zip_path))}")
+    print(f"   预检：{exe_msg}；zip 成员含 TrafficBoard/TrafficBoard.exe")
+    if a.dry_run:
+        print("DRY-RUN：本地预检全过，接下来会做但不执行：")
+        print(f"   1) 取 git credential（只打印长度/后4位）  2) POST /releases tag={a.tag}")
+        print(f"   3) 上传 {zip_path.name}  4) digest 与本地 sha 核对")
+        print(f"   5) 公开 /releases 页可见 {a.tag}  6) expanded_assets 列出 zip")
+        return 0
 
     tok = token()
     print(f"token len={len(tok)} tail={tok[-4:]}")        # 只报长度和后 4 位
     s = requests.Session()
     s.headers["Authorization"] = "Bearer " + tok
     s.proxies = PROXY
-
-    data = zip_path.read_bytes()
-    sha = hashlib.sha256(data).hexdigest()
-    print(f"1) 本地包 {zip_path.name} size={len(data)} sha256={sha} 文件条目={len(tbbuild.zip_file_names(zip_path))}")
 
     r = s.post(f"https://api.github.com/repos/{REPO}/releases",
                json={"tag_name": a.tag, "name": a.title or f"Traffic Board {a.tag}",

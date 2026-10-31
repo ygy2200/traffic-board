@@ -74,6 +74,11 @@ def zip_file_names(zip_path: Path) -> list[str]:
         return [n for n in z.namelist() if not n.endswith("/")]
 
 
+def zip_has_exe(zip_path: Path) -> bool:
+    """发布 zip 的顶层必须是 TrafficBoard/TrafficBoard.exe——别把空壳或错目录发出去。"""
+    return "TrafficBoard/TrafficBoard.exe" in zip_file_names(zip_path)
+
+
 def exe_version(exe: Path) -> str:
     """从打包产物里把 core.version 读出来。
 

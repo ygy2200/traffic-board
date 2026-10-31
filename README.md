@@ -239,6 +239,7 @@ QSettings 实例缓存覆盖，曾经抹掉过用户设置）。新增 Qt 冒烟
 python scripts/package.py --check        # 只报现状，一个字都不写
 python scripts/package.py --link-fix     # 打包 → 拷 out/<版本> → 打 zip → 把 sha256 填进发布说明
                                          #   → 从 exe 里自证版本 → 把桌面 .lnk 指到新产物
+python scripts/release.py --tag v1.6.6 --dry-run  # 只做本地预检并打印计划：不取 token、不联网
 python scripts/release.py --tag v1.6.6   # 外发：建 Release → 传附件 → digest → 公开页 → 附件列表
 ```
 
