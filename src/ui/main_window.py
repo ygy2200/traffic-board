@@ -471,6 +471,8 @@ class MainWindow(FluentWindow):
         from ui.settings_page import SettingsPage
         self.page_settings = SettingsPage(self.agg)
         self.addSubInterface(self.page_settings, FluentIcon.SETTING, "设置")
+        # 装页时 Qt 会重排焦点链，构造期设过的顺序要再钉一次
+        self.page_settings.apply_tab_order()
 
         # ---- 历史页 ----
         from ui.history_page import HistoryPage
@@ -587,6 +589,10 @@ class MainWindow(FluentWindow):
         这样左侧高亮和 qrouter 跟着一起变，不会翻页了页签还指着旧页。"""
         n = self.stackedWidget.count()
         self.switchTo(self.stackedWidget.widget(index % n))
+
+    def go_home(self) -> None:
+        """Esc（设置页内）回流量首页。不走清空搜索/关窗，避免误伤输入中的内容。"""
+        self.switchTo(self.stackedWidget.widget(0))
 
     @staticmethod
     def _synth_click(w) -> None:

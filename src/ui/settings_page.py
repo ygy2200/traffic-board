@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QSettings, QPoint
+from PySide6.QtCore import QSettings, QPoint, Qt
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QAbstractScrollArea, QGridLayout, QHBoxLayout, QFrame, QVBoxLayout, QWidget,
 )
@@ -20,6 +21,52 @@ from core.version import VERSION
 
 def _exe_path() -> str:
     return sys.executable if getattr(sys, "frozen", False) else ""
+
+
+class KeySwitch(SwitchButton):
+    """能 Tab 到、能空格/回车拨、聚焦看得见的开关。
+
+    qfluentwidgets 的 SwitchButton 默认 NoFocus（实测 focusPolicy=0），键盘用户
+    既到不了，硬 setFocus 后按空格也不改状态；它又是自绘控件，没有焦点描边分支。
+    另外带文字的开关一拨就把标签换成 On/Off（库里 onText 默认 'On'），
+    描述文字直接消失——这里把 on/off 文字钉成同一句。
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        txt = self.getText()
+        if txt not in (self.tr("Off"), self.tr("On")):
+            self.setOnText(txt)
+            self.setOffText(txt)
+
+    def keyPressEvent(self, e) -> None:  # noqa: N802
+        if e.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.toggleChecked()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def focusInEvent(self, e) -> None:  # noqa: N802
+        super().focusInEvent(e)
+        self.update()
+
+    def focusOutEvent(self, e) -> None:  # noqa: N802
+        super().focusOutEvent(e)
+        self.update()
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        super().paintEvent(e)
+        if not self.hasFocus():
+            return
+        # 开关控件被布局拉满整行（实测 871x22），描边只圈住指示器+文字，
+        # 否则键盘焦点看起来像选中了整张卡
+        r = self.indicator.geometry().united(self.label.geometry()).adjusted(-3, -2, 3, 2)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(120, 190, 255, 235), 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 5, 5)
 
 
 class _FlowFields(QWidget):
@@ -114,6 +161,10 @@ class SettingsPage(QWidget):
         iv.setContentsMargins(24, 20, 24, 20)
         iv.setSpacing(10)
         iv.addWidget(SubtitleLabel("设置"))
+        hint = CaptionLabel("键盘：Tab 切换控件 · 空格/回车 拨动开关 · Esc 回首页")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: rgb(160,160,160);")
+        iv.addWidget(hint)
 
         # ---- 开机自启 ----
         card1 = CardWidget(inner)
@@ -124,7 +175,7 @@ class SettingsPage(QWidget):
         note.setWordWrap(True)
         note.setStyleSheet("color: rgb(160,160,160);")
         c1.addWidget(note)
-        self.sw_autostart = SwitchButton(card1)
+        self.sw_autostart = KeySwitch(card1)
         self.sw_autostart.setChecked(get_autostart(_exe_path()))
         self.sw_autostart.checkedChanged.connect(self._on_autostart)
         c1.addWidget(self.sw_autostart)
@@ -135,15 +186,16 @@ class SettingsPage(QWidget):
         c2 = QVBoxLayout(card2)
         c2.setContentsMargins(16, 12, 16, 12)
         c2.addWidget(BodyLabel("悬浮速率条"))
-        self.sw_badge = SwitchButton("显示悬浮速率条", card2)
+        self.sw_badge = KeySwitch("显示悬浮速率条", card2)
         self.sw_badge.setChecked(self._settings.value("badge/enabled", "1") in ("1", "true", True))
         self.sw_badge.checkedChanged.connect(self._on_badge)
         c2.addWidget(self.sw_badge)
-        self.sw_topmost = SwitchButton("固定图层（始终显示在最前，不被窗口遮挡）", card2)
+        self.sw_topmost = KeySwitch("固定图层（始终置顶）", card2)
         self.sw_topmost.setChecked(self._settings.value("badge/topmost", "1") in ("1", "true", True))
         self.sw_topmost.checkedChanged.connect(self._on_topmost)
         c2.addWidget(self.sw_topmost)
-        note2 = CaptionLabel("悬浮条可拖动，右键它有锁定位置/显示主界面/退出。")
+        note2 = CaptionLabel("固定图层让悬浮条始终显示在其他窗口之上，不被遮挡。"
+                             "悬浮条可拖动，右键它有锁定位置/显示主界面/退出。")
         note2.setWordWrap(True)
         note2.setStyleSheet("color: rgb(160,160,160);")
         c2.addWidget(note2)
@@ -154,7 +206,7 @@ class SettingsPage(QWidget):
         c3 = QVBoxLayout(card3)
         c3.setContentsMargins(16, 12, 16, 12)
         c3.addWidget(BodyLabel("关闭主窗口时"))
-        self.sw_close_exit = SwitchButton("直接退出程序（不留后台）", card3)
+        self.sw_close_exit = KeySwitch("直接退出程序（不留后台）", card3)
         self.sw_close_exit.setChecked(self._settings.value("close/exit", "0") in ("1", "true", True))
         self.sw_close_exit.checkedChanged.connect(self._on_close_exit)
         c3.addWidget(self.sw_close_exit)
@@ -169,7 +221,7 @@ class SettingsPage(QWidget):
         c4 = QVBoxLayout(card4)
         c4.setContentsMargins(16, 12, 16, 12)
         c4.addWidget(BodyLabel("陌生连接提醒"))
-        self.sw_alert = SwitchButton(card4)
+        self.sw_alert = KeySwitch(card4)
         self.sw_alert.setChecked(self._settings.value("alert/enabled", "1") in ("1", "true", True))
         self.sw_alert.checkedChanged.connect(self._on_alert)
         c4.addWidget(self.sw_alert)
@@ -185,7 +237,7 @@ class SettingsPage(QWidget):
         cds = QVBoxLayout(card_ds)
         cds.setContentsMargins(16, 12, 16, 12)
         cds.addWidget(BodyLabel("数据源"))
-        self.sw_legacy = SwitchButton("强制传统模式（排查用）", card_ds)
+        self.sw_legacy = KeySwitch("强制传统模式（排查用）", card_ds)
         self.sw_legacy.setChecked(
             self._settings.value("forceLegacyMode", False, type=bool))
         self.sw_legacy.checkedChanged.connect(self._on_force_legacy)
@@ -238,6 +290,39 @@ class SettingsPage(QWidget):
         iv.addWidget(card5)
         iv.addStretch(1)
         self._loading = False
+        self._init_keyboard()
+
+    # ---- 键盘 ----
+    def _init_keyboard(self) -> None:
+        """把 Tab 链钉成卡片的阅读顺序，并给滚动区一条「不抢焦点」的规矩。
+
+        实测默认链序：从滚动区按 Tab 会先撞滚动条箭头，再跳导航页签，六个开关
+        一次都到不了；页内也没有任何回首页的出口。滚动条本身只是鼠标替代品，
+        键盘用户用方向键/PageUp 就能滚，没必要占停靠位。
+        """
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for sb in (self.scroll.verticalScrollBar(), self.scroll.horizontalScrollBar()):
+            sb.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            for child in sb.findChildren(QWidget):
+                child.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.apply_tab_order()
+        self._esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._esc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._esc.activated.connect(self._back_home)
+
+    def apply_tab_order(self) -> None:
+        """主窗口把所有页装进 stackedWidget 后要再调一次：
+        页被重新 parent 时 Qt 会重排链，只在构造期设一遍不一定留得住。"""
+        chain = [self.sw_autostart, self.sw_badge, self.sw_topmost,
+                 self.sw_close_exit, self.sw_alert, self.sw_legacy,
+                 self.sp_cap, self.sp_reset]
+        for a, b in zip(chain, chain[1:]):
+            QWidget.setTabOrder(a, b)
+
+    def _back_home(self) -> None:
+        win = self.window()
+        if hasattr(win, "go_home"):
+            win.go_home()
 
     # ---- 回调 ----
     def _on_autostart(self, checked: bool) -> None:

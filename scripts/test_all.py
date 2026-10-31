@@ -22,6 +22,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 
+# 控制台可能是 GBK：子进程输出里带 emoji 时 print 会抛 UnicodeEncodeError，
+# 把「测试失败」伪装成 runner 崩溃，末尾那段最有用的输出反而看不到。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 
 def suites(kind: str) -> list[Path]:
     pats = {"adv": "adv_*.py", "render": "render_*.py"}

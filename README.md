@@ -80,6 +80,7 @@ python tests/render_v172_infobar_words.py # 真实像素折行闸门（提醒条
 python tests/render_v173_badge_gate.py # 悬浮速率条闸门（半透明合成后的对比度 + 最长速率串不越界 + 悬浮说明，非离屏）
 python tests/render_v174_focus_chain.py # 键盘闸门（初始焦点/Tab 链可达/表格不困住 Tab/页签空格翻页/Ctrl+1..5 与 Ctrl+Tab 切页）
 python tests/render_v175_isolation.py # 测试隔离运行时证据：start_worker=False 时 PollWorker 未运行且 stop/wait/set_quota 安全
+python tests/render_v176_settings_keys.py # 设置页键盘闸门：六个开关可按顺序 Tab、空格/回车拨动、聚焦描边、Esc 回首页
 ```
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
@@ -167,6 +168,16 @@ R21（同一道闸门加到 11 步）先把 R20 留的那条"页签要按 8 次 
 **Ctrl+Tab / Ctrl+Shift+Tab** 前后翻且绕回。加之前这些键实测全是空的（不改页、不挪焦点、
 Ctrl+1 也不会往搜索框里插字符），走库自己的 `switchTo()` 所以左侧高亮和 qrouter 跟着一起变。
 闸门第 11 步把这几条都钉住，并加了反向对照：把快捷键 setEnabled(False) 之后必须翻不动页。
+
+R26 接着量设置页：六个 `SwitchButton` 全是 `focusPolicy=0`，Tab 链里根本没有它们，
+硬 `setFocus` 进去按空格状态也不变；滚动区的滚动条和箭头还占着停靠位；带文字的开关一拨，
+标签就变成 `On`/`Off`（描述文字消失）；页内也没有 Esc 出口。现在六个开关换成 `KeySwitch`：
+StrongFocus、空格/回车拨动、聚焦时只圈住指示器+文字（控件被布局拉满整行，圈全宽会像选中整张卡），
+Tab 链按卡片阅读顺序钉死，滚动区/滚动条全部 NoFocus，Esc 回流量首页（`render_v176_settings_keys.py`，
+含 NoFocus 变异对照）。改完 `render_v170_settings_fit.py` 立刻叫了：最长的「固定图层」文案不再
+缩成 `On` 后把设置页顶出 9px 横向滚动，改成「固定图层（始终置顶）」并把解释挪进卡片说明。
+`scripts/test_all.py` 也顺手补了控制台 `errors="replace"`——子进程输出带 emoji 时 runner 自己会崩，
+把测试失败伪装成工具故障。
 
 同一轮把 `_ToastBar` 里那个写死的 154 换成实测：图标+边距+关闭按钮那一圈按库的常数几何是 102
 （iconWidget 36 + closeButton 36 + 外边距 6+6 + 文本内边距 1 + addSpacing(12) + spacing 5），
