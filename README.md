@@ -47,6 +47,8 @@
 ```bash
 pip install -r requirements.txt
 python src/main.py                # 直接运行
+python scripts/test_all.py        # 串行跑全部套件，退出码说真话（别用 shell 管道看 rc）
+python scripts/test_all.py --match release   # 只跑文件名含 release 的套件
 python tests/adv_dns_cache.py     # 对抗性测试（畸形输入/并发/边界）
 python tests/adv_clash_api.py
 python tests/adv_aggregator.py    # 含 TUN 单源/模式切换/累计单调/速率 EMA
@@ -59,6 +61,7 @@ python tests/adv_quota.py         # 计费周期/阈值/告警状态机
 python tests/adv_secret.py        # 控制器密钥发现与 401 语义
 python tests/adv_process_exit.py  # 真实子进程退出：3 模式 × 8 轮断言 rc=0
 python tests/adv_single_instance.py  # 单实例：真子进程 + 命名管道 + 并发抢注
+python tests/adv_release_tools.py # 发布链闸门：占位符先于 token / digest 前缀 / zip 只数文件 / exe 内版本 / 桌面入口对齐当前版本
 python tests/render_v10_smoke.py  # 离屏渲染冒烟（五页导航 + 退出路径）
 python tests/render_v161.py       # 离屏渲染验收（排行双模式）
 python tests/render_v162.py       # 离屏渲染验收（总览/配额设置）
@@ -79,7 +82,10 @@ python tests/render_v174_focus_chain.py # 键盘闸门（初始焦点/Tab 链可
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
 套件调用的辅助件，不是独立套件：`_instance_driver.py` 少了命令行参数就必然 IndexError 退 1，
-所以串行回归跑 `tests/adv_*.py tests/render_*.py`，别用 `tests/*.py`。
+所以串行回归跑 `python scripts/test_all.py`（或 `tests/adv_*.py tests/render_*.py`），
+别用 `tests/*.py`。不要用 `for f in ...; do python "$f" | tail; done` 看结果：
+管道最后一段是 tail，rc 永远是 0，测试失败也会显示全绿（2026-10-31 实测踩过）。
+`scripts/log_round.py` 负责把每轮写进 `docs/iteration-ledger.jsonl`，轮次只由台账决定。
 Qt 套件之间也不要并发跑——它们靠父进程按注册表快照还原 QSettings，
 同时开两三个会互相把快照踩掉，表现为随机的 rc=127（实测踩过）。
 
@@ -228,41 +234,42 @@ QSettings 实例缓存覆盖，曾经抹掉过用户设置）。新增 Qt 冒烟
 ## 构建与发布
 
 ```bash
-python -m PyInstaller --noconfirm --distpath dist --workpath build TrafficBoard.spec
-cp -r dist/TrafficBoard out/<版本号>/          # 桌面快捷方式指向 out/<版本号>/TrafficBoard/TrafficBoard.exe
-python - <<'PY'                                # 打包成发布用 zip（根目录即 TrafficBoard/）
-import os, zipfile, pathlib
-src = pathlib.Path('out/<版本号>/TrafficBoard'); zp = pathlib.Path(f'TrafficBoard-v<版本号>-win64.zip')
-with zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED) as z:
-    for p in sorted(src.rglob('*')):
-        if p.is_file(): z.write(p, os.path.relpath(p, src.parent))
-PY
+python scripts/package.py --check        # 只报现状，一个字都不写
+python scripts/package.py --link-fix     # 打包 → 拷 out/<版本> → 打 zip → 把 sha256 填进发布说明
+                                         #   → 从 exe 里自证版本 → 把桌面 .lnk 指到新产物
+python scripts/release.py --tag v1.6.6   # 外发：建 Release → 传附件 → digest → 公开页 → 附件列表
 ```
+
+也可一条走完：`python scripts/package.py --link-fix --publish`（本地检查全绿才允许外发）。
+`scripts/package.py` 里几条是硬的：`out/<版本>` 已存在要显式 `--force`（旧目录改名进 `out/_discard/` 保留，
+不删）；检测到有 `TrafficBoard.exe` 正从 `out/` 里跑就停下来让人自己关——**脚本绝不代杀进程**；
+从 exe 的 PYZ 里读出的 `core.version` 与 `src/core/version.py` 不一致直接拒（防「bump 了版本号却拿旧产物发布」）。
+
+历史：这两半边以前是四步手敲命令（PyInstaller、`cp -r` 到 `out/`、一段内联 zip 脚本、手填 sha256），
+`scripts/tbbuild.py` 收着所有判据函数、两个脚本共用，`tests/adv_release_tools.py` 13 例钉住它们。
 
 版本号只在 `src/core/version.py` 定义（关于页、out/ 目录名、zip 名、Release 标签都取它）。
 发布前先跑全套 `adv_*.py` + `render_*.py`（全部要求 rc=0），再打 tag、建 Release、传 zip，
 最后按 sha256 核对附件——GitHub 附件的 `digest` 字段就是它。
 
-```bash
-python scripts/release.py --tag v1.6.5 --title "Traffic Board v1.6.5" \
-    --notes docs/releases/v1.6.5.md --zip TrafficBoard-v1.6.5-win64.zip
-```
+发布说明写在 `docs/releases/<版本>.md`，`release.py --notes` 可省（默认就取这份，缺文件就拒发）。
+以前它只躺在 gitignore 的 `tmp/` 里，等于 GitHub 上那份公开文本本机没有留档，
+改了什么、发给用户的是什么，下次无从对照。归档与线上有一处已知差异：v1.6.4 那份里一个折行示例
+带了本机家目录，归档时把用户名换成 `<用户名>`——不是保密（流水里本来就写着这类路径），
+是真实用户名对读者没有信息量。
 
-发布说明写在 `docs/releases/<版本>.md`（这一版起进版本库；之前只躺在 gitignore 的 `tmp/` 里，
-等于 GitHub 上那份公开文本本机没有留档，改了什么、发给用户的是什么，下次无从对照）。
-归档与线上有一处已知差异：v1.6.4 那份里一个折行示例带了本机家目录，归档时把用户名换成 `<用户名>`——
-不是保密（流水里本来就写着这类路径），是真实用户名对读者没有信息量。
 `scripts/release.py` 取代了以前每轮 sed 复制出来的一份 `publishXXX.py`，顺序是硬的：
 先扫发布说明里没填完的 `@XXX@` 占位符（**在拿 token 之前**拒，避免发半份说明）→
 `git credential fill` 取 token（只打印长度与后 4 位，从不打印明文）→ 建 Release
 （422「已存在」就复用那个 tag）→ 传附件 → 按本地 sha256 比对 digest（GitHub 惰性算摘要，重试 6 次）→
-**最后抓公开的 `/releases` 页面 HTML，里面必须能看见这个 tag**。
+抓公开的 `/releases` 页面 HTML，里面必须能看见这个 tag →
+**抓 `/releases/expanded_assets/<tag>` 片段，里面必须列出这个 zip**。
 前面几步全绿但公开列表看不见，对用户来说就是没发布。
 
-附件本身看不见这一点要单独说：Releases 页的附件列表是前端懒加载的，tag 页 HTML 里搜不到 zip 文件名
-（v1.6.5 发布时实测：标题、正文句子、SHA 都在，zip 名 0 命中）。所以脚本第 5 步验的是「这个版本可见」，
-不是「附件可下载」——后者要另外抓 `/releases/expanded_assets/<tag>` 片段或对下载直链发一次请求
-（v1.6.5 是手工验的：片段 HTTP 200 且列出 55.8 MB 那个 zip，直链匿名 302 跟随后 200）。
+最后一步是 v1.6.5 发布时补上的：Releases 页的附件列表改成前端懒加载了，tag 页 HTML 里搜不到 zip 文件名
+（实测：标题、正文句子、SHA 都在，zip 名 0 命中）——只验「版本可见」会漏掉「用户点不到那个包」。
+v1.6.5 当时是手工抓片段验的（HTTP 200、列出 55.8 MB 的 zip；直链匿名 302 跟随后 200），现在进脚本了。
+
 
 ## 已知边界（如实说明）
 
