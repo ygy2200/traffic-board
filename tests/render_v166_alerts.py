@@ -30,7 +30,7 @@ def _mk_window():
     app = QApplication.instance() or QApplication([])
     agg = Aggregator()
     agg.start = lambda: None
-    win = MainWindow(agg)
+    win = MainWindow(agg, start_worker=False)
     win.show()
     app.processEvents()
     return app, win, QSettings

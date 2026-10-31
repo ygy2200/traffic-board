@@ -32,7 +32,7 @@ def main() -> int:
     agg = Aggregator()
     agg.start = lambda: None                     # 隔离真实采集线程
     agg.clash.state.__dict__["online"] = False
-    win = MainWindow(agg)
+    win = MainWindow(agg, start_worker=False)
     win.resize(1000, 700)
     win.show()
     app.processEvents()

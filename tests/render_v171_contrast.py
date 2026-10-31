@@ -227,7 +227,7 @@ def _child() -> int:
     app = QApplication.instance() or QApplication([])
     agg = Aggregator()
     agg.start = lambda: None
-    win = mw.MainWindow(agg)
+    win = mw.MainWindow(agg, start_worker=False)
     win.alert_enabled = False
     win.resize(1000, 700)
     # 光 stub agg.start 不够：MainWindow 自己起了 PollWorker，它每秒 agg.build()

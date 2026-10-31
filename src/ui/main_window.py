@@ -343,7 +343,7 @@ class _FocusRing(QWidget):
 
 
 class MainWindow(FluentWindow):
-    def __init__(self, agg: Aggregator) -> None:
+    def __init__(self, agg: Aggregator, start_worker: bool = True) -> None:
         super().__init__()
         setTheme(Theme.DARK)
         self.setWindowTitle("流量看板")
@@ -504,7 +504,8 @@ class MainWindow(FluentWindow):
         self.worker.wave_ready.connect(self._on_wave, Qt.ConnectionType.QueuedConnection)
         self.worker.quota_alert.connect(self._on_quota_alert,
                                         Qt.ConnectionType.QueuedConnection)
-        self.worker.start()
+        if start_worker:
+            self.worker.start()
 
         # ---- 托盘 + 悬浮速率条 ----
         self._init_tray()

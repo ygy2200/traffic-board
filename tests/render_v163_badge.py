@@ -41,7 +41,7 @@ def _child() -> None:
         from ui.main_window import MainWindow
         agg = Aggregator()
         agg.start = lambda: None            # 隔离：不拉真实采集线程
-        return MainWindow(agg)
+        return MainWindow(agg, start_worker=False)
 
     # 1) 用户拖好并保存过的位置，重启后必须原样回来
     sentinel = inside(23, 41)

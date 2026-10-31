@@ -113,7 +113,7 @@ def _child() -> int:
 
     agg = Aggregator()
     agg.start = lambda: None
-    win = MainWindow(agg)
+    win = MainWindow(agg, start_worker=False)
     win.resize(1000, 700)
 
     # ---- 1. 标题栏三个按钮退出焦点链，判定函数本身要认得出标题栏 ----

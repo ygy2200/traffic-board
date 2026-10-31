@@ -107,7 +107,7 @@ from ui.main_window import MainWindow  # noqa: E402
 agg = Aggregator()
 agg.start = lambda: None            # 隔离：不拉真实采集线程
 agg.clash.state.__dict__["online"] = True
-win = MainWindow(agg)
+win = MainWindow(agg, start_worker=False)
 win.resize(980, 700)
 assert win.btn_sort.text() == "按速率"
 win._toggle_sort()

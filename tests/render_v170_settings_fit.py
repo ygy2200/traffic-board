@@ -71,7 +71,7 @@ def _child() -> int:
     app = QApplication.instance() or QApplication([])
     agg = Aggregator()
     agg.start = lambda: None
-    win = MainWindow(agg)
+    win = MainWindow(agg, start_worker=False)
     win.alert_enabled = False
     win.show()
     _settle(app)

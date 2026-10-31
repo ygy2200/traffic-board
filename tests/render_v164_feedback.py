@@ -35,7 +35,7 @@ def _child() -> int:
     app = QApplication.instance() or QApplication([])
     agg = Aggregator()
     agg.start = lambda: None
-    win = MainWindow(agg)
+    win = MainWindow(agg, start_worker=False)
     win.resize(1000, 700)
     win.show()
     app.processEvents()

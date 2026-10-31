@@ -89,7 +89,7 @@ def main() -> int:
     from core.aggregator import Aggregator
     from ui.main_window import MainWindow
     agg = Aggregator()
-    win = MainWindow(agg)
+    win = MainWindow(agg, start_worker=False)
     win.resize(980, 720)
     win.show()
     win.repaint()

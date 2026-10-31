@@ -62,6 +62,7 @@ python tests/adv_secret.py        # 控制器密钥发现与 401 语义
 python tests/adv_process_exit.py  # 真实子进程退出：3 模式 × 8 轮断言 rc=0
 python tests/adv_single_instance.py  # 单实例：真子进程 + 命名管道 + 并发抢注
 python tests/adv_release_tools.py # 发布链闸门：占位符先于 token / digest 前缀 / zip 只数文件 / exe 内版本 / 桌面入口对齐当前版本
+python tests/adv_test_isolation.py # 静态闸门：所有 render 套件必须 start_worker=False，不许拉起真实采集线程
 python tests/render_v10_smoke.py  # 离屏渲染冒烟（五页导航 + 退出路径）
 python tests/render_v161.py       # 离屏渲染验收（排行双模式）
 python tests/render_v162.py       # 离屏渲染验收（总览/配额设置）
@@ -78,6 +79,7 @@ python tests/render_v171_contrast.py # 真实像素文字对比度闸门（五�
 python tests/render_v172_infobar_words.py # 真实像素折行闸门（提醒条不许把路径/URL 劈开，非离屏）
 python tests/render_v173_badge_gate.py # 悬浮速率条闸门（半透明合成后的对比度 + 最长速率串不越界 + 悬浮说明，非离屏）
 python tests/render_v174_focus_chain.py # 键盘闸门（初始焦点/Tab 链可达/表格不困住 Tab/页签空格翻页/Ctrl+1..5 与 Ctrl+Tab 切页）
+python tests/render_v175_isolation.py # 测试隔离运行时证据：start_worker=False 时 PollWorker 未运行且 stop/wait/set_quota 安全
 ```
 
 `tests/_*.py`（`_qt_harness.py` / `_exit_driver.py` / `_instance_driver.py`）是被上面这些
